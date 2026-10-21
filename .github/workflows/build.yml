@@ -110,5 +110,19 @@ jobs:
           check "tools"                200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/tools)"
           check "hooks"                200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/hooks)"
           check "hooks/{name}"         200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/hooks/root_detection)"
+          check "vpn"                  200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/vpn)"
+          check "termux"               200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/termux)"
           check "bugSteps (no token)"  401 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7080/bugSteps)"
           check "bugSteps (token)"     200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/bugSteps)"
+
+      - name: a placeholder token must not be served
+        env:
+          AUTH_TOKEN: change-me-12345
+        run: |
+          set -euo pipefail
+          if python3 -m uvicorn bugxhunter.server:app --host 127.0.0.1 --port 7081 \
+              > /dev/null 2>&1; then
+            echo "FAIL: the server started with a placeholder token"
+            exit 1
+          fi
+          echo "  ok   refuses to start with a placeholder token"

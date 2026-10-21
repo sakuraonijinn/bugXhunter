@@ -98,6 +98,41 @@ def cmd_frida(args, client):
         _print(client.frida_execute(args.target, args.script))
 
 
+def cmd_vpn(args, client):
+    """Report or change the outbound traffic routing."""
+    import json as _json
+    import urllib.request
+    url = client.host.rstrip("/") + "/vpn"
+    data = None
+    if args.mode:
+        data = args.mode.encode("utf-8")
+    req = urllib.request.Request(url, data=data, method="POST" if data else "GET")
+    if client.token:
+        req.add_header("X-Auth-Token", client.token)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            _print(_json.loads(resp.read().decode("utf-8", "replace")))
+    except Exception as exc:
+        _print({"error": str(exc)})
+
+
+def cmd_termux(args, client):
+    """Report the Termux device state."""
+    import json as _json
+    import urllib.request
+    url = client.host.rstrip("/") + "/termux"
+    if args.limit:
+        url += "?limit={}".format(int(args.limit))
+    req = urllib.request.Request(url)
+    if client.token:
+        req.add_header("X-Auth-Token", client.token)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            _print(_json.loads(resp.read().decode("utf-8", "replace")))
+    except Exception as exc:
+        _print({"error": str(exc)})
+
+
 def cmd_hooks(args, client):
     """List, show, pull or run the Frida hook library."""
     from ..hooks import HookLibrary
@@ -264,6 +299,13 @@ def build_parser():
     drop.add_argument("--key", help="SSH private key path")
     drop.add_argument("--dest", help="destination directory (default: ~/xbug)")
 
+    vpn = sub.add_parser("vpn", help="report or change the traffic routing")
+    vpn.add_argument("--mode", choices=("auto", "off", "proxy", "tun"),
+                     help="routing mode to apply")
+
+    termux = sub.add_parser("termux", help="report the Termux device state")
+    termux.add_argument("--limit", type=int, help="how many SMS to read")
+
     frida = sub.add_parser("frida", help="control the target's frida-server")
     frida_sub = frida.add_subparsers(dest="frida_action", required=True)
     frida_sub.add_parser("start", help="start frida-server on the target")
@@ -296,6 +338,8 @@ HANDLERS = {
     "tools": cmd_tools,
     "hooks": cmd_hooks,
     "drop": cmd_drop,
+    "vpn": cmd_vpn,
+    "termux": cmd_termux,
 }
 
 

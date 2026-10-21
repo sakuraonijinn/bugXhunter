@@ -49,6 +49,12 @@ GUIDE = {
             ],
             "expect": "Server binds :7080. AUTH_TOKEN gates everything but /health.",
             "verify": "curl -s http://127.0.0.1:7080/health  ->  {\"ok\":true,...}",
+            "note": (
+                "The server refuses to start with a placeholder token, so "
+                "there is no way to leave it open by accident. Set a real "
+                "one with AUTH_TOKEN, --token, or the token key in "
+                "config.json."
+            ),
         },
         {
             "step": 2,
@@ -417,6 +423,7 @@ GUIDE = {
             "GET /frida/page",
             "GET /tools", "GET /hooks", "GET /hooks/{name}",
             "POST /hooks/run",
+            "GET /vpn", "POST /vpn", "GET /termux",
         ],
         "hidden": ["GET /bugSteps"],
     },

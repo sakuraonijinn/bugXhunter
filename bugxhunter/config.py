@@ -14,6 +14,16 @@ from typing import List, Dict, Any
 
 DEFAULT_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
 
+# Tokens that are obviously placeholders. Serving any of these would mean
+# an API that anyone could read, so the server refuses to start with one.
+#
+# The CI test token is deliberately not in this list: that server only
+# listens on the loopback interface and exists for the length of a test.
+PLACEHOLDER_TOKENS = frozenset({
+    "", "change-me-12345", "change-me", "changeme", "secret", "password",
+    "your-secret", "your-token", "token",
+})
+
 
 @dataclass
 class Config:

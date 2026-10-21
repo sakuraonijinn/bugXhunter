@@ -255,6 +255,36 @@ That builds a 56K tarball of the whole package, pushes it over `scp`, unpacks it
 ~/xbug/run.sh hooks pull
 ```
 
+## VPN routing
+
+The server can route its outbound traffic through a tunnel, and it says what it actually managed to do rather than assuming:
+
+```bash
+python3 -m bugxhunter.server --vpn --vpn-mode proxy
+xbug vpn                 # report the live state
+xbug vpn --mode tun      # request a mode
+```
+
+| Mode | What it does | Needs |
+|------|--------------|-------|
+| `auto` | uses whatever is already up | — |
+| `proxy` | sets `ALL_PROXY`/`HTTPS_PROXY`, which urllib and every subprocess inherit | a reachable SOCKS5 proxy, e.g. Tor on 9050 |
+| `tun` | verifies the default route goes through a tunnel | the VPN app up, and root to have set the route |
+| `off` | removes the proxy environment | — |
+
+`GET /vpn` returns `requested`, `applied` and a `note`. If you ask for `tun` and the route is not tunnelled, the note says so — a tunnel interface that is up but unused does not count as `tun`.
+
+## Termux device state
+
+On a Termux host the server can read the device's own sensors through the Termux:API add-on:
+
+```bash
+xbug termux
+xbug termux --limit 50
+```
+
+`GET /termux` returns location, battery, wifi, the clipboard and the SMS inbox. Without the add-on installed it says `available: false` rather than returning empty fields that look like real readings.
+
 ## Operator CLI
 
 ```bash

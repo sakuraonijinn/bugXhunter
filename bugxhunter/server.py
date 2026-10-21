@@ -18,7 +18,7 @@ import time
 from collections import OrderedDict
 from pathlib import Path
 
-from .config import Config, load as load_config
+from .config import Config, PLACEHOLDER_TOKENS, load as load_config
 from .frida import FridaClient
 from .hooks import HookLibrary
 from .posture import PostureCheck, under_proot
@@ -31,7 +31,9 @@ from .scanners.vuln import VulnScanner
 from .scanners.web import WebScanner
 from .termux import termux_available
 from .tools import ToolBridge
-from .vpn import status as vpn_status, active_mode, proxy_url
+from .vpn import apply as vpn_apply
+from .vpn import status as vpn_status
+from .vpn import active_mode, proxy_url
 
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -70,6 +72,8 @@ class Server:
                 "/tools": self._tools,
                 "/hooks": self._hooks,
                 "/hooks/run": self._hooks_run,
+                "/vpn": self._vpn,
+                "/termux": self._termux,
             },
             "POST": {
                 "/frida/start": self._frida_start,
@@ -294,7 +298,39 @@ class Server:
             "tools": report,
         }
 
-    def _hooks(self, handler, body):
+    def _vpn(self, handler, body):
+        """Report the live VPN state, and optionally change it."""
+        mode = (body or b"").decode("utf-8", "replace").strip() or "auto"
+        if mode not in ("auto", "off", "proxy", "tun"):
+            return {"ok": False, "reason": "mode must be auto, off, proxy or tun"}
+        result = vpn_apply(mode)
+        result["status"] = vpn_status()
+        return result
+
+    def _termux(self, handler, body):
+        """Termux device state: location, battery, wifi, clipboard, sms."""
+        from . import termux
+        if not termux.termux_available():
+            return {
+                "available": False,
+                "reason": "the Termux:API add-on is not installed",
+            }
+        limit = 20
+        if handler is not None:
+            value = self._query_param(handler, "limit")
+            if value and value.isdigit():
+                limit = max(1, min(200, int(value)))
+        return {
+            "available": True,
+            "api_path": termux.api_path(),
+            "location": termux.location(),
+            "battery": termux.battery(),
+            "wifi": termux.wifi_info(),
+            "clipboard": termux.clipboard_get(),
+            "sms": termux.sms_inbox(limit=limit),
+        }
+
+    def _hooks(self, handler, body, name=""):
         """List the Frida hook library, or return one script.
 
         The stdlib dispatcher reaches this with a real handler, so the
@@ -352,6 +388,21 @@ def make_server(config: Config):
     return Server(config)
 
 
+def _json_route(method, *args, **kwargs):
+    """Run a handler and turn a failure into a JSON error.
+
+    Without this an exception in a handler becomes an opaque 500 with
+    no body, and the operator cannot tell what went wrong.
+    """
+    try:
+        return JSONResponse(method(*args, **kwargs))
+    except Exception as exc:
+        return JSONResponse(
+            {"error": type(exc).__name__ + ": " + str(exc)},
+            status_code=500,
+        )
+
+
 def make_app(config: Config):
     """Build the ASGI application for a given config.
 
@@ -363,43 +414,53 @@ def make_app(config: Config):
     """
     server = make_server(config)
 
+    # A placeholder token is a well-known credential. Refusing to serve is
+    # better than serving an API that anyone can read. The check lives
+    # here so it covers both entry points: the module-level app used by
+    # uvicorn, and the app main() builds.
+    if config.auth_token in PLACEHOLDER_TOKENS:
+        raise SystemExit(
+            "refusing to start: the auth token is a placeholder.\n"
+            "set a real token with AUTH_TOKEN, --token, or the "
+            '"token" key in config.json')
+
     async def _health_route(request):
-        return JSONResponse(server._health(None, b""))
+        return _json_route(server._health, None, b"")
 
     async def _status_route(request):
-        return JSONResponse(server._status(None, b""))
+        return _json_route(server._status, None, b"")
 
     async def _diagnose_route(request):
-        return JSONResponse(server._diagnose(None, b""))
+        return _json_route(server._diagnose, None, b"")
 
     async def _frida_status_route(request):
-        return JSONResponse(server._frida_status(None, b""))
+        return _json_route(server._frida_status, None, b"")
 
     async def _frida_devices_route(request):
-        return JSONResponse(server._frida_devices(None, b""))
+        return _json_route(server._frida_devices, None, b"")
 
     async def _frida_processes_route(request):
         device = request.query_params.get("device") or None
-        return JSONResponse(server._frida_processes(None, b"", device))
+        return _json_route(server._frida_processes, None, b"", device)
 
     async def _frida_results_route(request):
-        return JSONResponse(server._frida_results(None, b""))
+        return _json_route(server._frida_results, None, b"")
 
     async def _frida_result_route(request):
         result_id = request.path_params.get("result_id", "")
-        return JSONResponse(server._frida_results(None, b"", result_id))
+        return _json_route(server._frida_results, None, b"", result_id)
 
     async def _frida_start_route(request):
         body = await request.body()
-        return JSONResponse(server._frida_start(None, body))
+        return _json_route(server._frida_start, None, body)
 
     async def _frida_stop_route(request):
         body = await request.body()
-        return JSONResponse(server._frida_stop(None, body))
+        return _json_route(server._frida_stop, None, body)
 
     async def _frida_script_route(request):
         body = await request.body()
-        return JSONResponse(server._frida_script(None, body))
+        return _json_route(server._frida_script, None, body)
 
     async def _frida_page_route(request):
         token = request.query_params.get("token", "")
@@ -410,24 +471,34 @@ def make_app(config: Config):
 
     async def _bug_steps_route(request):
         """Hidden endpoint: the operator field guide."""
-        return JSONResponse(server._bug_steps(None, b""))
+        return _json_route(server._bug_steps, None, b"")
 
     async def _tools_route(request):
         """Report which Kali tools are reachable."""
-        return JSONResponse(server._tools(None, b""))
+        return _json_route(server._tools, None, b"")
 
     async def _hooks_route(request):
         """List the Frida hook library."""
-        return JSONResponse(server._hooks(None, b""))
+        return _json_route(server._hooks, None, b"")
 
     async def _hooks_name_route(request):
         """Return one hook's script, so a target can pull it."""
-        return JSONResponse(server._hooks_named(request.path_params["name"]))
+        return _json_route(server._hooks_named,
+                           request.path_params["name"])
 
     async def _hooks_run_route(request):
         """Run a hook against a target process."""
         body = await request.body()
-        return JSONResponse(server._hooks_run(None, body))
+        return _json_route(server._hooks_run, None, body)
+
+    async def _vpn_route(request):
+        """Report or change the VPN routing mode."""
+        body = await request.body()
+        return _json_route(server._vpn, None, body)
+
+    async def _termux_route(request):
+        """Report the Termux device state."""
+        return _json_route(server._termux, None, b"")
 
     routes = [
         Route("/health", _health_route, methods=["GET"]),
@@ -452,6 +523,8 @@ def make_app(config: Config):
         # captured as a hook name.
         Route("/hooks/run", _hooks_run_route, methods=["POST"]),
         Route("/hooks/{name}", _hooks_name_route, methods=["GET"]),
+        Route("/vpn", _vpn_route, methods=["GET", "POST"]),
+        Route("/termux", _termux_route, methods=["GET"]),
     ]
 
     class AuthMiddleware:
@@ -502,7 +575,11 @@ def main():
     parser.add_argument("--port", type=int, default=7080)
     parser.add_argument("--config", default=None)
     parser.add_argument("--token", default=None)
-    parser.add_argument("--vpn", action="store_true")
+    parser.add_argument("--vpn", action="store_true",
+                        help="route outbound traffic through a VPN tunnel")
+    parser.add_argument("--vpn-mode", default=None,
+                        choices=("auto", "off", "proxy", "tun"),
+                        help="how to route outbound traffic")
     parser.add_argument("--frida-host", default=None,
                         help="frida-server host (default: this machine)")
     args = parser.parse_args()
@@ -512,14 +589,27 @@ def main():
         config.auth_token = args.token
     if args.frida_host:
         config.frida_host = args.frida_host
-    config.vpn_enabled = args.vpn
+    if args.vpn_mode:
+        config.vpn_mode = args.vpn_mode
+    if args.vpn:
+        config.vpn_enabled = True
+        if config.vpn_mode == "off":
+            config.vpn_mode = "auto"
 
     server = make_server(config)
 
-    # Start VPN tunnel if requested.
-    if config.vpn_enabled:
-        from .vpn import route_all_through_tunnel
-        route_all_through_tunnel()
+    # Put the traffic routing into the requested mode.
+    #
+    # The result is reported, not discarded. A requested mode that could
+    # not be applied says so, rather than the server quietly running in
+    # the clear and looking protected.
+    vpn_result = vpn_apply(config.vpn_mode or "auto")
+    if vpn_result.get("note"):
+        print("vpn: {} (requested {})".format(
+            vpn_result.get("applied"), vpn_result.get("requested")))
+        print("vpn: " + vpn_result["note"])
+    else:
+        print("vpn: mode {}".format(vpn_result.get("applied")))
 
     # Start Frida server if not running.
     #

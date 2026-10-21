@@ -79,9 +79,7 @@ KALI_TOOLS: Dict[str, dict] = {
         "improves": "config_audit",
         "command": ["testssl.sh", "--jsonfile-pretty", "/dev/stdout", ""],
     },
-    "nikto_alt": {},  # placeholder removed below
 }
-KALI_TOOLS.pop("nikto_alt")
 
 # The NetHunter rootfs, where the Kali binaries live.
 KALI_ROOTS = ("kali-arm64", "kali-armhf", "kali")
