@@ -7,7 +7,7 @@ you own or are authorised to test.
 
 import re
 
-from .network import NetworkScan
+from ..http import Fetcher
 
 # SQL error fingerprints from common databases / drivers.
 SQL_ERROR_PATTERNS = [
@@ -47,7 +47,7 @@ class VulnScanner:
     """Differential vulnerability probes."""
 
     def __init__(self, net=None):
-        self.net = net or NetworkScan()
+        self.net = net or Fetcher()
 
     def _sql_error(self, body):
         for pattern in SQL_ERROR_PATTERNS:

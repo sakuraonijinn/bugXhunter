@@ -78,6 +78,64 @@ class ReverseSSH:
         time.sleep(1)
         return self._proc.poll() is None
 
+    def connect_multi(self, forwards):
+        """Open a single tunnel carrying several port forwards.
+
+        ``forwards`` is a list of ``(remote_port, local_port)`` pairs. One
+        SSH process is spawned with one ``-R`` per pair, which matters
+        because every extra SSH process is another thing to leak if the
+        client dies without closing it.
+        """
+        if not forwards:
+            return False
+
+        args = self._build_base_args()
+        for remote_port, local_port in forwards:
+            args.insert(-1, "-R {}:localhost:{}".format(remote_port, local_port))
+
+        self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
+                                       stderr=subprocess.DEVNULL)
+        self._tunnels.extend(forwards)
+
+        time.sleep(1)
+        return self._proc.poll() is None
+
+    def run_command(self, command, timeout=15):
+        """Run a command on the target over SSH and return its output.
+
+        This is how the Frida server gets started on the target. The
+        operator cannot spawn ``/data/local/tmp/frida-server`` locally,
+        so it has to happen on the device.
+        """
+        args = ["ssh"]
+        if self.key:
+            args.extend(["-i", self.key])
+        if self.password and shutil.which("sshpass"):
+            args = ["sshpass", "-p", self.password] + args
+        args.extend([
+            "-p", str(self.port),
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
+            "-o", "ConnectTimeout=5",
+            "-o", "BatchMode=yes",
+            "{}@{}".format(self.user, self.host),
+            command,
+        ])
+        try:
+            out = subprocess.run(args, capture_output=True, text=True,
+                                 timeout=timeout)
+            return {
+                "ok": out.returncode == 0,
+                "stdout": out.stdout,
+                "stderr": out.stderr,
+                "code": out.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "stdout": "", "stderr": "timeout", "code": -1}
+        except OSError as exc:
+            return {"ok": False, "stdout": "", "stderr": str(exc), "code": -1}
+
     def connect_dynamic(self, remote_port=7080):
         """Open a dynamic SOCKS proxy via reverse tunnel.
 

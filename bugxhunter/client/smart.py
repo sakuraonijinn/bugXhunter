@@ -26,6 +26,10 @@ from ..vpn import status as vpn_status
 class SmartClient:
     """High-level client that auto-provisions Frida and tunnels traffic."""
 
+    # Ports that have to be reachable for the suite to work at all.
+    FRIDA_PORT = 27042
+    SERVER_PORT = 7080
+
     def __init__(self, host, token=None, ssh_host=None, ssh_port=22,
                  ssh_user=None, ssh_key=None, timeout_ms=8000):
         self.host = host
@@ -39,6 +43,8 @@ class SmartClient:
         self.frida = FridaClient()
         self.tunnel = None
         self._ready = False
+        self._server_ready = False
+        self.last_error = None
 
     # ------------------------------------------------------------------
     # Provisioning
@@ -48,41 +54,97 @@ class SmartClient:
 
         Returns True on success, False on failure.
         """
-        # Step 1: open reverse SSH tunnel if configured.
+    def ensure_ready(self, max_wait=30):
+        """Ensure the server is reachable and Frida is running.
+
+        Returns True on success, False on failure. On failure, last_error
+        explains why rather than leaving the caller guessing.
+        """
+        if not self.ensure_server(max_wait=max_wait):
+            return False
+        return self.ensure_frida(max_wait=max_wait)
+
+    def ensure_server(self, max_wait=15):
+        """Ensure the server host is reachable. Does not touch Frida.
+
+        Posture checks and web scans do not need Frida, so they must not
+        pay for Frida's readiness wait.
+        """
+        if self._server_ready:
+            return True
+
+        # Open the reverse tunnel if configured.
+        #
+        # Two forwards are needed, not one. FridaClient binds 127.0.0.1 on
+        # the operator, so without a forward for 27042 it can never see the
+        # target's frida-server no matter how healthy the tunnel looks.
         if self.ssh_host and not self.tunnel:
             self.tunnel = ReverseSSH(
                 host=self.ssh_host, port=self.ssh_port,
                 user=self.ssh_user, key=self.ssh_key,
             )
             if not self.tunnel.test_connectivity():
+                self.last_error = "ssh to {} unreachable".format(self.ssh_host)
                 return False
-            # Tunnel the server's port back to the operator host.
-            self.tunnel.connect(remote_port=7080, local_port=7080)
+            # One SSH process carrying both forwards.
+            self.tunnel.connect_multi([
+                (self.SERVER_PORT, self.SERVER_PORT),
+                (self.FRIDA_PORT, self.FRIDA_PORT),
+            ])
 
-        # Step 2: wait for the server to respond.
+        # Wait for the server to respond.
         deadline = time.time() + max_wait
         while time.time() < deadline:
             if self._ping():
-                break
+                self._server_ready = True
+                self.last_error = None
+                return True
             time.sleep(1)
-        else:
-            return False
 
-        # Step 3: auto-start Frida if not running.
-        status = self.frida.status()
-        if not status.get("running"):
-            self.frida.start()
+        self.last_error = "server {} did not respond".format(self.host)
+        return False
 
-        # Step 4: wait for Frida to become ready.
+    def ensure_frida(self, max_wait=30):
+        """Ensure a Frida server is reachable, starting it if needed."""
+        if self._ready:
+            return True
+
+        # frida-server has to run on the target, not here. Starting it
+        # locally is the one move that looks right and silently does
+        # nothing, because /data/local/tmp/frida-server does not exist on
+        # the operator's filesystem.
+        if not self.frida.status().get("running"):
+            self._start_frida_on_target()
+
         deadline = time.time() + max_wait
         while time.time() < deadline:
-            status = self.frida.status()
-            if status.get("running"):
+            if self.frida.status().get("running"):
                 self._ready = True
-                break
+                self.last_error = None
+                return True
             time.sleep(1)
 
-        return self._ready
+        self.last_error = (
+            "frida-server not reachable on port {}".format(self.FRIDA_PORT)
+        )
+        return False
+
+    def _start_frida_on_target(self):
+        """Start frida-server on the target device over SSH.
+
+        Falls back to a local start when there is no tunnel, which is the
+        right behaviour when the operator and the target are the same box.
+        """
+        if not self.tunnel:
+            return self.frida.start()
+
+        # Try root first, then unprivileged. On a rooted device the su
+        # path is the one that works; on a Termux-hosted frida-server the
+        # plain path is.
+        return self.tunnel.run_command(
+            "su -c '/data/local/tmp/frida-server --no-pause &' "
+            "|| /data/local/tmp/frida-server --no-pause &"
+        )
 
     def _ping(self):
         """Check whether the server is reachable."""
@@ -101,10 +163,10 @@ class SmartClient:
     # ------------------------------------------------------------------
     def diagnose(self):
         """Run posture checks and return findings as a list of dicts."""
-        if not self._ready:
-            if not self.ensure_ready():
+        if not self._server_ready:
+            if not self.ensure_server():
                 return [{"level": "HIGH", "category": "posture.unreachable",
-                         "detail": "Server not reachable"}]
+                         "detail": self.last_error or "Server not reachable"}]
         posture = PostureCheck()
         return posture.run()
 
@@ -137,21 +199,36 @@ class SmartClient:
     def scan_web(self, base_url):
         """Run web posture checks against a target URL."""
         from ..scanners.web import WebScanner
-        from ..scanners.network import NetworkScan
-        scanner = WebScanner(NetworkScan())
-        return scanner.scan(base_url)
+        return WebScanner().scan(base_url)
 
     def scan_vuln(self, url):
         """Run vulnerability probes against a target URL."""
         from ..scanners.vuln import VulnScanner
-        from ..scanners.network import NetworkScan
-        scanner = VulnScanner(NetworkScan())
-        return scanner.scan(url)
+        return VulnScanner().scan(url)
 
     def scan_credentials(self, path):
         """Scan a directory for exposed credentials."""
         from ..scanners.credential import CredentialScanner
         return CredentialScanner().scan_dir(path)
+
+    def bug_steps(self):
+        """Fetch the operator field guide from the server.
+
+        Hidden endpoint, token-gated like everything else. Works without
+        the server being up: the guide is bundled locally too, so the
+        operator can always read it.
+        """
+        import urllib.request
+        url = self.host.rstrip("/") + "/bugSteps"
+        req = urllib.request.Request(url)
+        if self.token:
+            req.add_header("X-Auth-Token", self.token)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_ms / 1000) as resp:
+                return json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception:
+            from ..steps import guide
+            return guide()
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -162,3 +239,4 @@ class SmartClient:
             self.tunnel.close()
             self.tunnel = None
         self._ready = False
+        self._server_ready = False

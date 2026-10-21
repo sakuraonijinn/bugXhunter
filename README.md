@@ -39,9 +39,12 @@ Then in the BugDeck Android app, configure the Device tab and Frida tab with the
 │  posture.py   ← device fingerprint checks            │
 │  vpn.py       ← VPN tunnel routing                   │
 │  termux.py    ← Termux package management            │
+│  http.py      ← HTTP client for the scanners         │
 │  client/      ← smart client with auto-provisioning  │
 │    smart.py   ← goal-oriented API                     │
 │    reverse_ssh.py ← reverse tunnel support           │
+│    cli.py     ← operator CLI (`python3 -m bugxhunter.client`) │
+│  steps.py     ← operator field guide (hidden)        │
 │  scanners/    ← network, web, vuln, cred, config     │
 └──────────────────────┬──────────────────────────────┘
                        │  HTTP + X-Auth-Token
@@ -67,6 +70,65 @@ Then in the BugDeck Android app, configure the Device tab and Frida tab with the
 | GET | `/frida/processes` | yes | List processes |
 | POST | `/frida/script` | yes | Execute script |
 | GET | `/frida/page` | yes | Frida web UI |
+
+## Working against a remote target
+
+Three roles, one tunnel:
+
+```
+Target (frida-server :27042)
+   │  ssh -N -R 27042:localhost:27042 operator@host     ← outbound, target-initiated
+   ▼
+Operator (127.0.0.1:27042 → target :27042)               ← FridaClient binds here
+   │
+   ▼
+Server host (:7080)   ← /status, /diagnose, /frida/* API
+```
+
+The target never needs an inbound port. It dials the operator, and the
+operator's `27042` is forwarded to the target's Frida server, so
+`FridaClient` reaches the target transparently through `127.0.0.1`.
+
+Two forwards are carried by a single SSH process: `7080` for the server
+API and `27042` for Frida. Starting `frida-server` happens *on the
+target* over SSH — spawning it locally is the one move that looks right
+and silently does nothing.
+
+## Operator CLI
+
+```bash
+export BUGXHUNTER_HOST=http://server-host:7080
+export BUGXHUNTER_TOKEN=your-token
+export BUGXHUNTER_SSH=operator-host        # for the reverse tunnel
+export BUGXHUNTER_KEY=~/.ssh/id_ed25519
+
+python3 -m bugxhunter.client steps          # the field guide, works offline
+python3 -m bugxhunter.client status         # server + Frida state
+python3 -m bugxhunter.client diagnose       # posture findings
+python3 -m bugxhunter.client devices        # Frida-visible devices
+python3 -m bugxhunter.client frida start    # start frida-server on the target
+python3 -m bugxhunter.client frida exec com.example.app hook.js
+python3 -m bugxhunter.client scan web https://target.example
+```
+
+## The field guide
+
+`bugSteps` is the operator's field guide: nine phases from standing up
+the server to tearing down, each with the command, the expected result
+and a verification, plus troubleshooting for the five failure modes that
+actually bite.
+
+It is served from a hidden endpoint and is deliberately absent from
+`/status`, so a casual endpoint sweep will not find it. It is still
+token-gated.
+
+```bash
+curl -s -H "X-Auth-Token: $BUGXHUNTER_TOKEN" \
+  http://$BUGXHUNTER_HOST/bugSteps
+```
+
+The same content is bundled locally, so `xbug steps` works with no
+server running.
 
 ## License
 

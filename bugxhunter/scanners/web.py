@@ -10,7 +10,7 @@ authorised to test.
 
 import re
 
-from .network import NetworkScan
+from ..http import Fetcher
 
 # Debug / management endpoints that should never be public.
 DEBUG_PATHS = [
@@ -36,7 +36,7 @@ class WebScanner:
     """Web-application posture scanner."""
 
     def __init__(self, net=None):
-        self.net = net or NetworkScan()
+        self.net = net or Fetcher()
 
     def scan(self, base_url):
         """Run all web-posture checks against a base URL."""
