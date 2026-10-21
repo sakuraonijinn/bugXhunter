@@ -12,7 +12,10 @@ import argparse
 import json
 import os
 import sys
+import tempfile
+import threading
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 from .config import Config, load as load_config
@@ -45,6 +48,12 @@ class Server:
         self.tools = ToolBridge()
         self.priv = Privileges()
         self.hooks = HookLibrary()
+        # Script results, keyed by id, newest last. Bounded so a long
+        # running server cannot grow without limit.
+        self._results = OrderedDict()
+        self._result_lock = threading.Lock()
+        self._result_seq = 0
+        self._result_limit = 100
         self._handlers = {
             "GET": {
                 "/health": self._health,
@@ -102,6 +111,9 @@ class Server:
             return
 
         route = self._handlers.get(method, {}).get(path)
+        if route is None and path.startswith("/frida/results/"):
+            # Parameterised result lookup.
+            route = self._handlers.get(method, {}).get("/frida/results")
         if route is None:
             self._send(handler, 404, {"error": "not found"})
             return
@@ -147,22 +159,125 @@ class Server:
     def _frida_devices(self, handler, body):
         return {"devices": self.frida.list_devices()}
 
-    def _frida_processes(self, handler, body):
-        return {"processes": self.frida.list_processes()}
+    def _frida_processes(self, handler, body, device=None):
+        """List processes on a device.
+
+        The device comes from the ?device= query parameter, which the
+        Android app sends. It is ignored when absent.
+        """
+        if not device:
+            device = self._query_param(handler, "device") or "local"
+        return {"processes": self.frida.list_processes(device), "device": device}
 
     def _frida_script(self, handler, body):
+        """Run a script against a process and keep the result.
+
+        The script may be given as source text or as a path to a file on
+        the server. The Android app sends source text; the CLI sends a
+        path.
+        """
         try:
-            payload = json.loads(body)
+            payload = json.loads(body or b"{}")
         except json.JSONDecodeError:
             return {"ok": False, "reason": "invalid JSON"}
-        return self.frida.execute(
-            payload.get("target", ""),
-            payload.get("script", ""),
-            payload.get("device", "local"),
-        )
 
-    def _frida_results(self, handler, body):
-        return {"ok": True, "results": []}
+        target = payload.get("target") or payload.get("process") or ""
+        script = payload.get("script") or ""
+        device = payload.get("device") or "local"
+
+        if not target:
+            return {"ok": False, "reason": "target is required"}
+        if not script:
+            return {"ok": False, "reason": "script is required"}
+
+        script_path, cleanup = self._resolve_script(script)
+        if script_path is None:
+            return {"ok": False, "reason": "script could not be resolved"}
+
+        try:
+            result = self.frida.execute(target, script_path, device)
+        finally:
+            if cleanup:
+                try:
+                    os.unlink(script_path)
+                except OSError:
+                    pass
+
+        result["target"] = target
+        result["device"] = device
+        result_id = self._store_result(target, device, result)
+        result["result_id"] = result_id
+        return result
+
+    @staticmethod
+    def _resolve_script(script):
+        """Return (path, should_delete) for a script given as text or a path."""
+        # A path that exists on the server is used as-is.
+        if "\n" not in script and len(script) < 4096:
+            try:
+                if os.path.isfile(script):
+                    return script, False
+            except OSError:
+                pass
+        # Otherwise it is source text, so it goes to a temporary file.
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                mode="w", suffix=".js", prefix="bugxhunter-", delete=False)
+            with handle:
+                handle.write(script)
+            return handle.name, True
+        except OSError:
+            return None, False
+
+    def _store_result(self, target, device, result):
+        """Keep a script result and return its id."""
+        with self._result_lock:
+            self._result_seq += 1
+            result_id = "r{0:06d}".format(self._result_seq)
+            self._results[result_id] = {
+                "result_id": result_id,
+                "target": target,
+                "device": device,
+                "created": time.time(),
+                "ok": bool(result.get("ok")),
+                "stdout": result.get("stdout", ""),
+                "stderr": result.get("stderr", ""),
+            }
+            while len(self._results) > self._result_limit:
+                self._results.popitem(last=False)
+        return result_id
+
+    def _get_result(self, result_id):
+        with self._result_lock:
+            return self._results.get(result_id)
+
+    def _frida_results(self, handler, body, result_id=None):
+        """Serve a stored script result."""
+        if not result_id:
+            path = handler.path.split("?", 1)[0] if handler is not None else ""
+            parts = path.strip("/").split("/")
+            result_id = parts[2] if len(parts) > 2 else ""
+        if not result_id:
+            return {"ok": True, "results": []}
+        stored = self._get_result(result_id)
+        if stored is None:
+            return {"ok": False, "reason": "no such result: {}".format(result_id)}
+        return stored
+
+    @staticmethod
+    def _query_param(handler, name):
+        """Read a query parameter from the request path."""
+        if handler is None:
+            return None
+        path = getattr(handler, "path", "") or ""
+        if "?" not in path:
+            return None
+        query = path.split("?", 1)[1]
+        for pair in query.split("&"):
+            key, _, value = pair.partition("=")
+            if key == name:
+                return value
+        return None
 
     def _bug_steps(self, handler, body):
         """Return the operator field guide. Hidden from route listings."""
@@ -264,10 +379,15 @@ def make_app(config: Config):
         return JSONResponse(server._frida_devices(None, b""))
 
     async def _frida_processes_route(request):
-        return JSONResponse(server._frida_processes(None, b""))
+        device = request.query_params.get("device") or None
+        return JSONResponse(server._frida_processes(None, b"", device))
 
     async def _frida_results_route(request):
         return JSONResponse(server._frida_results(None, b""))
+
+    async def _frida_result_route(request):
+        result_id = request.path_params.get("result_id", "")
+        return JSONResponse(server._frida_results(None, b"", result_id))
 
     async def _frida_start_route(request):
         body = await request.body()
@@ -317,6 +437,7 @@ def make_app(config: Config):
         Route("/frida/devices", _frida_devices_route, methods=["GET"]),
         Route("/frida/processes", _frida_processes_route, methods=["GET"]),
         Route("/frida/results", _frida_results_route, methods=["GET"]),
+        Route("/frida/results/{result_id}", _frida_result_route, methods=["GET"]),
         Route("/frida/start", _frida_start_route, methods=["POST"]),
         Route("/frida/stop", _frida_stop_route, methods=["POST"]),
         Route("/frida/script", _frida_script_route, methods=["POST"]),
