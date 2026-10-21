@@ -174,7 +174,52 @@ GUIDE = {
             ),
         },
         {
-            "step": 9,
+            "step": 10,
+            "name": "Drop the agent on a target",
+            "where": OPERATOR,
+            "commands": [
+                "# build the bundle and push it over SSH",
+                "xbug drop --host 10.0.0.42 --user operator --key ~/.ssh/id_ed25519",
+                "# on the target, it is now just:",
+                "~/xbug/run.sh hooks list",
+                "~/xbug/run.sh hooks pull",
+            ],
+            "expect": (
+                "A 56K tarball with the whole package and the hook "
+                "library, unpacked and verified against the local hook "
+                "hash."
+            ),
+            "verify": (
+                "delivery.verified is true, and "
+                "delivery.remote_hooks_version matches hooks_version."
+            ),
+        },
+        {
+            "step": 11,
+            "name": "Use the hook library",
+            "where": OPERATOR,
+            "commands": [
+                "xbug hooks list",
+                "xbug hooks show ssl_pinning_bypass",
+                "xbug hooks pull --dest ./hooks",
+                "xbug hooks run ssl_pinning_bypass --target com.example.app",
+                "curl -s -H \"X-Auth-Token: $AUTH_TOKEN\" \\",
+                "  http://SERVER_HOST:7080/hooks",
+                "curl -s -H \"X-Auth-Token: $AUTH_TOKEN\" \\",
+                "  http://SERVER_HOST:7080/hooks/root_detection",
+            ],
+            "expect": (
+                "Every hook carries a SHA-256, and the library carries a "
+                "version that is the hash of all of them. A finding can "
+                "cite the exact script that produced it."
+            ),
+            "verify": (
+                "The version does not change unless a script changes, so "
+                "two runs of the same version are comparable."
+            ),
+        },
+        {
+            "step": 12,
             "name": "Teardown",
             "where": OPERATOR,
             "commands": [
@@ -186,7 +231,8 @@ GUIDE = {
             "expect": "Frida stopped, tunnel closed, no residue on the target.",
             "verify": "curl /frida/status  ->  running:false",
         },
-    ],    "privileges": {
+    ],
+    "privileges": {
         "summary": (
             "The server uses the best local elevation it can find. The "
             "tiers are not interchangeable: root beats shell, and shell "
@@ -369,7 +415,10 @@ GUIDE = {
             "GET /frida/processes", "GET /frida/results",
             "POST /frida/start", "POST /frida/stop", "POST /frida/script",
             "GET /frida/page",
+            "GET /tools", "GET /hooks", "GET /hooks/{name}",
+            "POST /hooks/run",
         ],
+        "hidden": ["GET /bugSteps"],
     },
     "troubleshooting": [
         {

@@ -177,6 +177,55 @@ python3 -m bugxhunter.server --host 0.0.0.0 --port 7080 --frida-host 10.0.0.42
 `/status` reports `emulated: true` when it detects a PRoot userland, and
 `frida.mode` reports `local` or `remote`.
 
+## The hook library
+
+Nine Frida scripts ship in `bugxhunter/hooks/`, each with a header saying what it does and how to run it:
+
+| Hook | What it does |
+|------|--------------|
+| `ssl_pinning_bypass` | defeats certificate pinning (OkHttp, Conscrypt, TrustManager) |
+| `root_detection` | finds how the app decides it is rooted, and prints the stack for each check |
+| `crypto_hook` | captures keys, plaintext and ciphertext from the JCA |
+| `keystore_hook` | watches Android Keystore use, flags software keys |
+| `network_capture` | shows requests and responses without a proxy in the path |
+| `file_access` | watches disk reads and writes, plus every SQL statement |
+| `shared_prefs_dump` | dumps SharedPreferences and watches writes |
+| `anti_debug_bypass` | stops the app noticing it is being instrumented |
+| `method_trace` | traces every call to one class, with timings |
+
+```bash
+xbug hooks list
+xbug hooks show ssl_pinning_bypass
+xbug hooks pull --dest ./hooks
+xbug hooks run ssl_pinning_bypass --target com.example.app
+```
+
+The server serves them too, so a target can pull them over the tunnel without git:
+
+```
+GET /hooks              manifest: every hook with its SHA-256
+GET /hooks/{name}       one script, with its hash
+POST /hooks/run         {"hook": "...", "target": "com.example.app"}
+```
+
+**Why not gists.** A gist is mutable and has no history, so "the script was in a gist" is not evidence of what ran against a target. A gist URL fetched at execution time is a remote-code-execution path by design — anyone who can edit the gist runs code on your target. Here every hook carries a SHA-256 and the library carries a version that is the hash of all of them, so a finding cites an exact script and two runs of the same version are comparable.
+
+## Dropping the agent on a target
+
+The client is **stdlib-only** — no third-party imports anywhere in `bugxhunter/client/`. So the target needs nothing but Python 3 and SSH. No git, no pip, no packages.
+
+```bash
+xbug drop --host 10.0.0.42 --user operator --key ~/.ssh/id_ed25519
+```
+
+That builds a 56K tarball of the whole package, pushes it over `scp`, unpacks it, and **verifies the hook library's content hash on the far side matches the local one** — so you know the scripts on the device are the scripts you reviewed.
+
+```bash
+# on the target
+~/xbug/run.sh hooks list
+~/xbug/run.sh hooks pull
+```
+
 ## Operator CLI
 
 ```bash

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .config import Config, load as load_config
 from .frida import FridaClient
+from .hooks import HookLibrary
 from .posture import PostureCheck, under_proot
 from .privileges import Privileges
 from .scanners.credential import CredentialScanner
@@ -43,6 +44,7 @@ class Server:
         self.frida = FridaClient(host=config.frida_host, port=config.frida_port)
         self.tools = ToolBridge()
         self.priv = Privileges()
+        self.hooks = HookLibrary()
         self._handlers = {
             "GET": {
                 "/health": self._health,
@@ -57,6 +59,8 @@ class Server:
                 # rest, but it is deliberately off the beaten path.
                 "/bugSteps": self._bug_steps,
                 "/tools": self._tools,
+                "/hooks": self._hooks,
+                "/hooks/run": self._hooks_run,
             },
             "POST": {
                 "/frida/start": self._frida_start,
@@ -175,6 +179,58 @@ class Server:
             "tools": report,
         }
 
+    def _hooks(self, handler, body):
+        """List the Frida hook library, or return one script.
+
+        The stdlib dispatcher reaches this with a real handler, so the
+        hook name is taken from the path.
+        """
+        name = ""
+        if handler is not None:
+            parts = handler.path.split("?", 1)[0].strip("/").split("/")
+            if len(parts) > 1 and parts[1]:
+                name = parts[1]
+        return self._hooks_named(name)
+
+    def _hooks_named(self, name):
+        """Return the library manifest, or one hook's script."""
+        if name:
+            meta = self.hooks.get(name)
+            if not meta:
+                return {"error": "no such hook: {}".format(name)}
+            return {
+                "name": meta["name"],
+                "sha256": meta["sha256"],
+                "version": self.hooks.version(),
+                "git_commit": self.hooks.git_commit(),
+                "script": self.hooks.read(name),
+            }
+        return self.hooks.manifest()
+
+    def _hooks_run(self, handler, body):
+        """Run a named hook against a target process."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return {"ok": False, "reason": "invalid JSON"}
+
+        name = payload.get("hook", "")
+        target = payload.get("target", "")
+        device = payload.get("device", "local")
+        args = payload.get("args", [])
+
+        meta = self.hooks.get(name)
+        if not meta:
+            return {"ok": False, "reason": "no such hook: {}".format(name)}
+        if not target:
+            return {"ok": False, "reason": "target is required"}
+
+        result = self.frida.execute(target, meta["path"], device)
+        result["hook"] = meta["name"]
+        result["sha256"] = meta["sha256"]
+        result["version"] = self.hooks.version()
+        return result
+
 
 def make_server(config: Config):
     """Build a configured Server instance."""
@@ -240,6 +296,19 @@ def make_app(config: Config):
         """Report which Kali tools are reachable."""
         return JSONResponse(server._tools(None, b""))
 
+    async def _hooks_route(request):
+        """List the Frida hook library."""
+        return JSONResponse(server._hooks(None, b""))
+
+    async def _hooks_name_route(request):
+        """Return one hook's script, so a target can pull it."""
+        return JSONResponse(server._hooks_named(request.path_params["name"]))
+
+    async def _hooks_run_route(request):
+        """Run a hook against a target process."""
+        body = await request.body()
+        return JSONResponse(server._hooks_run(None, body))
+
     routes = [
         Route("/health", _health_route, methods=["GET"]),
         Route("/status", _status_route, methods=["GET"]),
@@ -257,6 +326,11 @@ def make_app(config: Config):
         # find it.
         Route("/bugSteps", _bug_steps_route, methods=["GET", "POST"]),
         Route("/tools", _tools_route, methods=["GET"]),
+        Route("/hooks", _hooks_route, methods=["GET"]),
+        # /hooks/run must come before /hooks/{name} so "run" is not
+        # captured as a hook name.
+        Route("/hooks/run", _hooks_run_route, methods=["POST"]),
+        Route("/hooks/{name}", _hooks_name_route, methods=["GET"]),
     ]
 
     class AuthMiddleware:

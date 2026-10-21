@@ -98,6 +98,96 @@ def cmd_frida(args, client):
         _print(client.frida_execute(args.target, args.script))
 
 
+def cmd_hooks(args, client):
+    """List, show, pull or run the Frida hook library."""
+    from ..hooks import HookLibrary
+    library = HookLibrary()
+
+    if args.hooks_action == "list":
+        manifest = library.manifest()
+        _print({
+            "version": manifest["version"],
+            "git_commit": manifest["git_commit"],
+            "count": manifest["count"],
+            "hooks": [
+                {"name": h["name"], "sha256": h["sha256"],
+                 "description": h["description"]}
+                for h in manifest["hooks"]
+            ],
+        })
+        return
+
+    if args.hooks_action == "show":
+        meta = library.get(args.name)
+        if not meta:
+            _print({"error": "no such hook: {}".format(args.name)})
+            return
+        _print({
+            "name": meta["name"],
+            "sha256": meta["sha256"],
+            "size": meta["size"],
+            "description": meta["description"],
+            "run": meta["run"],
+            "script": library.read(args.name),
+        })
+        return
+
+    if args.hooks_action == "pull":
+        dest = args.dest or "hooks"
+        os.makedirs(dest, exist_ok=True)
+        pulled = []
+        for meta in library.list():
+            text = library.read(meta["name"])
+            if text is None:
+                continue
+            path = os.path.join(dest, meta["name"])
+            with open(path, "w", encoding="utf-8") as handle:
+                handle.write(text)
+            pulled.append({"name": meta["name"], "sha256": meta["sha256"],
+                           "path": path})
+        _print({"pulled": len(pulled), "dest": dest, "hooks": pulled,
+                "version": library.version()})
+        return
+
+    if args.hooks_action == "run":
+        meta = library.get(args.name)
+        if not meta:
+            _print({"error": "no such hook: {}".format(args.name)})
+            return
+        if not args.target:
+            _print({"error": "a target process is required, e.g. --target com.example.app"})
+            return
+        result = client.frida_execute(args.target, meta["path"])
+        if result is None:
+            _print({"ok": False, "error": client.last_error or "frida not ready"})
+            return
+        result["hook"] = meta["name"]
+        result["sha256"] = meta["sha256"]
+        _print(result)
+        return
+
+
+def cmd_drop(args, client):
+    """Build the agent bundle and deliver it to a remote target."""
+    from .drop import Dropper
+    dropper = Dropper()
+    archive = dropper.build()
+    result = {
+        "built": archive,
+        "sha256": dropper.archive_hash(archive),
+        "hooks_version": dropper.hooks_version(),
+    }
+    if not args.host:
+        result["error"] = ("no target given, so the bundle was only built; "
+                           "add --host to deliver it")
+        _print(result)
+        return
+    result["delivery"] = dropper.deliver(
+        archive, host=args.host, user=args.user or "operator",
+        port=args.port, key=args.key, dest_dir=args.dest or "~/xbug")
+    _print(result)
+
+
 def cmd_tools(args, client):
     """List the reachable Kali tools."""
     bridge = ToolBridge()
@@ -142,6 +232,24 @@ def build_parser():
     sub.add_parser("processes", help="list processes on the target")
     sub.add_parser("tools", help="list reachable Kali tools")
 
+    hooks = sub.add_parser("hooks", help="the Frida hook library")
+    hooks_sub = hooks.add_subparsers(dest="hooks_action", required=True)
+    hooks_sub.add_parser("list", help="list the hooks with their hashes")
+    hs = hooks_sub.add_parser("show", help="show one hook")
+    hs.add_argument("name", help="hook name, with or without the .js")
+    hp = hooks_sub.add_parser("pull", help="copy the hooks to a directory")
+    hp.add_argument("--dest", help="destination directory (default: hooks)")
+    hr = hooks_sub.add_parser("run", help="run a hook against a target")
+    hr.add_argument("name", help="hook name")
+    hr.add_argument("--target", help="target process or package name")
+
+    drop = sub.add_parser("drop", help="deliver the agent to a remote target")
+    drop.add_argument("--host", help="target SSH host")
+    drop.add_argument("--user", help="SSH user (default: operator)")
+    drop.add_argument("--port", type=int, default=22, help="SSH port")
+    drop.add_argument("--key", help="SSH private key path")
+    drop.add_argument("--dest", help="destination directory (default: ~/xbug)")
+
     frida = sub.add_parser("frida", help="control the target's frida-server")
     frida_sub = frida.add_subparsers(dest="frida_action", required=True)
     frida_sub.add_parser("start", help="start frida-server on the target")
@@ -172,6 +280,8 @@ HANDLERS = {
     "frida": cmd_frida,
     "scan": cmd_scan,
     "tools": cmd_tools,
+    "hooks": cmd_hooks,
+    "drop": cmd_drop,
 }
 
 
