@@ -151,6 +151,30 @@ GUIDE = {
         },
         {
             "step": 9,
+            "name": "Use the Kali tools",
+            "where": SERVER,
+            "commands": [
+                "# what is reachable, and whether it is native or via nethunter",
+                "xbug tools",
+                "curl -s -H \"X-Auth-Token: $AUTH_TOKEN\" \\",
+                "  http://SERVER_HOST:7080/tools",
+                "# content discovery with a wordlist",
+                "xbug scan web https://target.example --wordlist /path/to/words.txt",
+                "# port and service scan",
+                "xbug scan ports 10.0.0.42",
+            ],
+            "expect": (
+                "The same scanners as step 8, but sqlmap, nmap, nikto, "
+                "gobuster, trufflehog, whatweb and sslscan run alongside "
+                "the built-in probes when they are present."
+            ),
+            "verify": (
+                "Findings from a Kali tool carry a category naming it, "
+                "such as vuln.sqli or web.nikto."
+            ),
+        },
+        {
+            "step": 9,
             "name": "Teardown",
             "where": OPERATOR,
             "commands": [
@@ -162,13 +186,141 @@ GUIDE = {
             "expect": "Frida stopped, tunnel closed, no residue on the target.",
             "verify": "curl /frida/status  ->  running:false",
         },
-    ],
+    ],    "privileges": {
+        "summary": (
+            "The server uses the best local elevation it can find. The "
+            "tiers are not interchangeable: root beats shell, and shell "
+            "does not help with Frida."
+        ),
+        "tiers": [
+            {
+                "level": "root",
+                "via": "su",
+                "gives": "uid 0. Full control of the device.",
+                "enables": "package enumeration, dumpsys, Frida, everything",
+            },
+            {
+                "level": "shizuku",
+                "via": "rish",
+                "gives": "uid 2000, shell privileges.",
+                "enables": (
+                    "package enumeration, dumpsys, device admin and "
+                    "accessibility state"
+                ),
+                "does_not_enable": (
+                    "ptrace of another app's process, so Frida still needs "
+                    "root on the target"
+                ),
+            },
+            {
+                "level": "plain",
+                "via": "nothing",
+                "gives": "the app's own uid.",
+                "enables": (
+                    "the local posture checks that need no privilege, and "
+                    "every network scanner"
+                ),
+            },
+        ],
+        "shizuku_setup": [
+            "termux-setup-storage",
+            "# Shizuku app: 'Use Shizuku in terminal apps' -> Export files",
+            "# export rish and rish_shizuku.dex to ~/storage/downloads",
+            "cp ~/storage/downloads/rish $PREFIX/bin/",
+            "cp ~/storage/downloads/rish_shizuku.dex $PREFIX/lib/",
+            "rish            # first run does the binder setup",
+            "rish -c 'id -u'   # should print 2000",
+        ],
+        "check": [
+            "xbug status      # 'privileges' field: root, shizuku or plain",
+            "curl -s -H \"X-Auth-Token: $AUTH_TOKEN\" \\",
+            "  http://SERVER_HOST:7080/status",
+        ],
+        "note": (
+            "Shizuku is orthogonal to the network plane. A VPN or "
+            "WireGuard link carries the traffic; Shizuku only decides "
+            "how much the server can see about its own device. Use both."
+        ),
+    },
     "deployment_profiles": {
+        "nethunter-kali": {
+            "summary": (
+                "The server runs in native Termux on the second Android, "
+                "with the Kali tools beside it. The server stays out of "
+                "the PRoot userland on purpose: Termux API and the "
+                "posture checks work natively there, and the Kali tools "
+                "are reached through the nethunter wrapper."
+            ),
+            "install": [
+                "termux-setup-storage",
+                "pkg install wget",
+                "wget -O install-nethunter-termux https://offs.ec/2MceZWr",
+                "chmod +x install-nethunter-termux",
+                "./install-nethunter-termux",
+                "# the toolset, this is the big download",
+                "pkg install kali-tools",
+                "# or just what you need",
+                "pkg install nmap sqlmap nikto gobuster",
+            ],
+            "layout": {
+                "rootfs": "~/kali-arm64 (or kali-armhf on older devices)",
+                "kali_cli": "nethunter",
+                "kali_root_cli": "nethunter -r",
+                "run_one_command": "nethunter <command>",
+                "server": "stays in native Termux, not in the proot",
+            },
+            "run": [
+                "export AUTH_TOKEN=your-token",
+                "# in native Termux, so termux API and posture checks work",
+                "python3 -m bugxhunter.server --host 0.0.0.0 --port 7080",
+            ],
+            "why_not_in_the_proot": [
+                "The server is pure Python. PRoot exists to provide a "
+                "glibc userland, and this server does not need one.",
+                "Every HTTP probe in a web scan pays a ptrace tax under "
+                "PRoot, and a web scan is 45 sequential requests.",
+                "termux-location, termux-sms-inbox and friends are Termux "
+                "binaries. In the guest they need the prefix bound and on "
+                "PATH, which is a bind flag you can forget.",
+                "The posture checks read getprop and pm from /system, which "
+                "is simpler outside the guest.",
+                "nethunter <command> already runs a tool in the Kali "
+                "environment, so there is no reason to put the server "
+                "there too.",
+            ],
+            "tool_bridge": [
+                "The server uses the Kali tools when it finds them, and "
+                "falls back to its own pure-Python scanners when it "
+                "does not. Nothing needs configuring.",
+                "xbug tools          # what is reachable, and how",
+                "GET /tools          # the same, from the server",
+                "nmap    -> port, service and version detection",
+                "sqlmap  -> real SQL injection testing",
+                "nikto   -> web server misconfiguration",
+                "gobuster/ffuf -> content discovery",
+                "trufflehog/gitleaks -> secret detection, including git history",
+                "whatweb -> technology fingerprinting",
+                "sslscan / testssl.sh -> TLS configuration",
+            ],
+            "caveats": [
+                "A frida-server still cannot run under PRoot, and cannot "
+                "run in Termux without root. The target needs root and "
+                "the frida-server binary; point the server at it with "
+                "--frida-host.",
+                "The Kali rootfs is large. A full kali-linux-default "
+                "install is several gigabytes; kali-tools is the "
+                "practical minimum.",
+                "Kali ships its own python. Install the bugXhunter "
+                "dependencies in the Termux python, not the Kali one, "
+                "because the server runs in Termux.",
+            ],
+        },
         "proot-vm": {
             "summary": (
-                "bugXhunter on a second Android, inside a PRoot userland. "
-                "The VM is a Linux box that cannot host a frida-server, so "
-                "it drives one running natively on the target instead."
+                "bugXhunter on a second Android, inside a plain PRoot "
+                "userland. Works, but see the nethunter-kali profile: "
+                "this one is only worth it if you already have a PRoot "
+                "distro set up."
             ),
             "install": [
                 "pkg install proot proot-distro termux-api",

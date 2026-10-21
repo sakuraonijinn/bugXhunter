@@ -18,6 +18,7 @@ from pathlib import Path
 from .config import Config, load as load_config
 from .frida import FridaClient
 from .posture import PostureCheck, under_proot
+from .privileges import Privileges
 from .scanners.credential import CredentialScanner
 from .steps import guide as bug_steps_guide
 from .scanners.config_audit import ConfigAudit
@@ -25,6 +26,7 @@ from .scanners.network import NetworkScan
 from .scanners.vuln import VulnScanner
 from .scanners.web import WebScanner
 from .termux import termux_available
+from .tools import ToolBridge
 from .vpn import status as vpn_status, active_mode, proxy_url
 
 from starlette.applications import Starlette
@@ -39,6 +41,8 @@ class Server:
     def __init__(self, config: Config):
         self.config = config
         self.frida = FridaClient(host=config.frida_host, port=config.frida_port)
+        self.tools = ToolBridge()
+        self.priv = Privileges()
         self._handlers = {
             "GET": {
                 "/health": self._health,
@@ -52,6 +56,7 @@ class Server:
                 # is the operator's field guide; it is token-gated like the
                 # rest, but it is deliberately off the beaten path.
                 "/bugSteps": self._bug_steps,
+                "/tools": self._tools,
             },
             "POST": {
                 "/frida/start": self._frida_start,
@@ -117,13 +122,14 @@ class Server:
             "vpn": vpn_status(),
             "termux": termux_available(),
             "emulated": under_proot(),
+            "privileges": self.priv.detect(),
         }
 
     def _diagnose(self, handler, body):
         """Run posture checks and return findings."""
-        posture = PostureCheck()
+        posture = PostureCheck(priv=self.priv)
         findings = posture.run()
-        return {"findings": findings}
+        return {"findings": findings, "privileges": self.priv.detect()}
 
     def _frida_status(self, handler, body):
         return self.frida.status()
@@ -157,6 +163,17 @@ class Server:
     def _bug_steps(self, handler, body):
         """Return the operator field guide. Hidden from route listings."""
         return bug_steps_guide()
+
+    def _tools(self, handler, body):
+        """Report which Kali tools are reachable."""
+        report = self.tools.available()
+        return {
+            "kali_root": self.tools.kali_root,
+            "nethunter": self.tools._nethunter_path() is not None,
+            "available": [name for name, meta in report.items()
+                          if meta["available"]],
+            "tools": report,
+        }
 
 
 def make_server(config: Config):
@@ -219,6 +236,10 @@ def make_app(config: Config):
         """Hidden endpoint: the operator field guide."""
         return JSONResponse(server._bug_steps(None, b""))
 
+    async def _tools_route(request):
+        """Report which Kali tools are reachable."""
+        return JSONResponse(server._tools(None, b""))
+
     routes = [
         Route("/health", _health_route, methods=["GET"]),
         Route("/status", _status_route, methods=["GET"]),
@@ -235,6 +256,7 @@ def make_app(config: Config):
         # and absent from /status, so a casual endpoint sweep will not
         # find it.
         Route("/bugSteps", _bug_steps_route, methods=["GET", "POST"]),
+        Route("/tools", _tools_route, methods=["GET"]),
     ]
 
     class AuthMiddleware:

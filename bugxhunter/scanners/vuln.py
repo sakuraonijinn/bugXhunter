@@ -116,8 +116,13 @@ class VulnScanner:
                 return {"vulnerable": True, "evidence": payload}
         return {"vulnerable": False, "reason": "no LFI resolved"}
 
-    def scan(self, url):
-        """Run all probes and return findings."""
+    def scan(self, url, tools=None):
+        """Run all probes and return findings.
+
+        When *tools* is a ToolBridge, sqlmap is run alongside the
+        built-in differential probe. sqlmap is far more thorough, so
+        its findings are the ones to trust when both fire.
+        """
         findings = []
         for name in ("sql_inject", "xss", "path_traversal", "lfi"):
             try:
@@ -131,4 +136,20 @@ class VulnScanner:
                     "detail": "{} vulnerable at {} — {}".format(
                         name, url, result.get("evidence", "")),
                 })
+        if tools is not None:
+            findings.extend(self._sqlmap_findings(url, tools))
         return findings
+
+    def _sqlmap_findings(self, url, tools):
+        """Run sqlmap against the URL."""
+        if not tools.has("sqlmap"):
+            return []
+        result = tools.run(
+            "sqlmap",
+            ["-u", url, "--batch", "--risk=1", "--level=1",
+             "--timeout=10", "--retries=1"],
+            timeout=600,
+        )
+        if not result.get("ok"):
+            return []
+        return tools.parse_sqlmap_output(result.get("stdout", ""))

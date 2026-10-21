@@ -114,9 +114,10 @@ class PostureCheck:
 
     LEVELS = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
 
-    def __init__(self):
+    def __init__(self, priv=None):
         self.findings = []
         self.emulated = under_proot()
+        self.priv = priv
 
     def _add(self, level, category, detail):
         self.findings.append({
@@ -306,6 +307,73 @@ class PostureCheck:
     # ------------------------------------------------------------------
     # Run all
     # ------------------------------------------------------------------
+    def check_installed_apps(self):
+        """Enumerate installed packages and flag the interesting ones.
+
+        An app-level package list is heavily filtered, so this only
+        means anything with root or Shizuku. Without either, the check
+        reports that it could not run rather than implying the device
+        is clean.
+        """
+        priv = self.priv
+        if priv is None or not priv.is_elevated():
+            self._add(
+                "INFO", "posture.packages",
+                "Package enumeration needs root or Shizuku; not available",
+            )
+            return
+
+        packages = priv.list_packages()
+        if not packages:
+            self._add("INFO", "posture.packages",
+                      "Package list came back empty")
+            return
+
+        flagged = priv.classify_packages(packages)
+        for item in flagged:
+            level = "HIGH" if item["category"] in ("root", "instrumentation") \
+                else "MEDIUM"
+            self._add(level, "posture.package.{}".format(item["category"]),
+                      "{} installed: {}".format(item["label"], item["package"]))
+        self._add("INFO", "posture.packages",
+                  "{} packages enumerated via {}".format(
+                      len(packages), priv.detect()))
+
+    def check_debuggable_apps(self):
+        """Find apps that ship with the debuggable flag set.
+
+        A debuggable app can be attached to by anyone with adb, so it
+        is a real finding on a device under assessment.
+        """
+        priv = self.priv
+        if priv is None or not priv.is_elevated():
+            return
+        debuggable = priv.list_packages(["-d"])
+        for name in debuggable:
+            self._add("HIGH", "posture.debuggable",
+                      "Debuggable app installed: {}".format(name))
+        if debuggable:
+            self._add("INFO", "posture.debuggable",
+                      "{} debuggable apps".format(len(debuggable)))
+
+    def check_device_admin(self):
+        """Check the device administrator and lock-screen state."""
+        priv = self.priv
+        if priv is None or not priv.is_elevated():
+            return
+        result = priv.run("/system/bin/dumpsys device_policy", timeout=20)
+        if not result.get("ok"):
+            return
+        info = priv.parse_dumpsys_device_policy(result.get("stdout", ""))
+        for admin in info["admins"]:
+            self._add("MEDIUM", "posture.device_admin",
+                      "Device administrator: {}".format(admin))
+        if info.get("password_quality"):
+            quality = info["password_quality"]
+            if quality in ("0", "1", "2"):
+                self._add("HIGH", "posture.weak_lock",
+                          "Lock screen password quality is low ({})".format(quality))
+
     def run(self):
         """Run all posture checks and return findings."""
         self.findings = []
@@ -326,6 +394,9 @@ class PostureCheck:
             "check_vpn",
             "check_file_integrity",
             "check_encryption",
+            "check_installed_apps",
+            "check_debuggable_apps",
+            "check_device_admin",
         ):
             try:
                 getattr(self, name)()

@@ -74,8 +74,13 @@ class CredentialScanner:
         except OSError:
             return []
 
-    def scan_dir(self, root, recursive=True):
-        """Scan a directory tree for credentials."""
+    def scan_dir(self, root, recursive=True, tools=None):
+        """Scan a directory tree for credentials.
+
+        When *tools* is a ToolBridge, trufflehog or gitleaks is run over
+        the tree as well. They catch secrets the regex patterns miss,
+        especially in git history.
+        """
         findings = []
         for dirpath, dirnames, filenames in os.walk(root):
             if not recursive:
@@ -85,4 +90,54 @@ class CredentialScanner:
                 findings.extend(self.scan_file(path))
             # Skip hidden and binary-heavy directories.
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        if tools is not None:
+            findings.extend(self._kali_findings(root, tools))
+        return findings
+
+    def _kali_findings(self, root, tools):
+        """Run trufflehog or gitleaks over the tree."""
+        findings = []
+        if tools.has("trufflehog"):
+            result = tools.run("trufflehog", ["filesystem", root, "--json"],
+                               timeout=600)
+            if result.get("ok"):
+                for line in result.get("stdout", "").splitlines():
+                    line = line.strip()
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        import json
+                        data = json.loads(line)
+                    except ValueError:
+                        continue
+                    source = (data.get("SourceMetadata") or {}).get("Data", {})
+                    path = source.get("Filesystem", {}).get("file", "")
+                    raw = data.get("Raw", "")
+                    findings.append({
+                        "level": "HIGH" if data.get("VerificationStatus") == "VERIFIED"
+                                 else "MEDIUM",
+                        "category": "credential.trufflehog",
+                        "detail": "{} found in {}".format(
+                            data.get("DetectorName", "secret"), path or "unknown"),
+                        "match": raw[:120],
+                    })
+        elif tools.has("gitleaks"):
+            result = tools.run("gitleaks", ["detect", "--source", root,
+                                            "--report-format", "json",
+                                            "--no-banner", "-r"], timeout=600)
+            if result.get("ok") and result.get("stdout"):
+                try:
+                    import json
+                    data = json.loads(result["stdout"])
+                except ValueError:
+                    data = []
+                for item in data:
+                    findings.append({
+                        "level": "HIGH" if item.get("Secret") else "MEDIUM",
+                        "category": "credential.gitleaks",
+                        "detail": "{} found in {}".format(
+                            item.get("RuleID", "secret"),
+                            item.get("File", "unknown")),
+                        "match": (item.get("Secret") or "")[:120],
+                    })
         return findings

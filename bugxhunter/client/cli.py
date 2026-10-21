@@ -24,6 +24,7 @@ import os
 import sys
 
 from .smart import SmartClient
+from ..tools import ToolBridge
 
 
 def _client(args, tunnel=True):
@@ -97,14 +98,29 @@ def cmd_frida(args, client):
         _print(client.frida_execute(args.target, args.script))
 
 
+def cmd_tools(args, client):
+    """List the reachable Kali tools."""
+    bridge = ToolBridge()
+    report = bridge.available()
+    _print({
+        "kali_root": bridge.kali_root,
+        "nethunter": bridge._nethunter_path() is not None,
+        "available": [n for n, m in report.items() if m["available"]],
+        "tools": report,
+    })
+
+
 def cmd_scan(args, client):
     """Run a scanner."""
+    bridge = ToolBridge()
     if args.scan_kind == "web":
-        _print(client.scan_web(args.url))
+        _print(client.scan_web(args.url, tools=bridge, wordlist=args.wordlist))
     elif args.scan_kind == "vuln":
-        _print(client.scan_vuln(args.url))
+        _print(client.scan_vuln(args.url, tools=bridge))
     elif args.scan_kind == "creds":
-        _print(client.scan_credentials(args.url))
+        _print(client.scan_credentials(args.url, tools=bridge))
+    elif args.scan_kind == "ports":
+        _print(client.scan_ports(args.url, tools=bridge))
 
 
 def build_parser():
@@ -124,6 +140,7 @@ def build_parser():
     sub.add_parser("diagnose", help="run posture checks")
     sub.add_parser("devices", help="list Frida-visible devices")
     sub.add_parser("processes", help="list processes on the target")
+    sub.add_parser("tools", help="list reachable Kali tools")
 
     frida = sub.add_parser("frida", help="control the target's frida-server")
     frida_sub = frida.add_subparsers(dest="frida_action", required=True)
@@ -138,8 +155,10 @@ def build_parser():
     scan_sub.add_parser("web", help="web posture scan")
     scan_sub.add_parser("vuln", help="vulnerability probes")
     scan_sub.add_parser("creds", help="credential exposure scan")
+    scan_sub.add_parser("ports", help="port and service scan")
     for p in scan_sub.choices.values():
-        p.add_argument("url", help="target URL or path")
+        p.add_argument("url", help="target URL, host or path")
+        p.add_argument("--wordlist", help="wordlist for content discovery")
 
     return parser
 
@@ -152,6 +171,7 @@ HANDLERS = {
     "processes": cmd_processes,
     "frida": cmd_frida,
     "scan": cmd_scan,
+    "tools": cmd_tools,
 }
 
 

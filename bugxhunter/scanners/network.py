@@ -123,14 +123,24 @@ def _ping_latency(host: str, timeout: float = 3.0) -> Tuple[bool, float]:
 
 
 def scan(target: str, ports: Optional[List[int]] = None,
-         timeout: float = 3.0, max_ports: int = 30) -> NetworkScan:
+         timeout: float = 3.0, max_ports: int = 30,
+         tools=None) -> NetworkScan:
     """Run a network scan against *target*.
 
     If *ports* is None, uses a curated list of the most common ports.
+
+    When *tools* is a ToolBridge and nmap is reachable, nmap does the
+    work instead: it does version detection, which a banner grab cannot.
+    The built-in probe stays as the fallback.
     """
     ns = NetworkScan(target=target)
     if ports is None:
         ports = sorted(WELL_KNOWN.keys())[:max_ports]
+
+    if tools is not None and tools.has("nmap"):
+        nmap_result = _scan_with_nmap(ns, target, ports, tools, timeout)
+        if nmap_result:
+            return ns
 
     reachable, latency = _ping_latency(target, timeout)
     ns.reachable = reachable
@@ -145,6 +155,35 @@ def scan(target: str, ports: Optional[List[int]] = None,
         if pr.error:
             ns.errors.append(f"port {port}: {pr.error}")
     return ns
+
+
+def _scan_with_nmap(ns, target, ports, tools, timeout):
+    """Fill *ns* from nmap's output. Returns True if nmap did the work."""
+    port_arg = ",".join(str(p) for p in ports)
+    args = ["-sV", "-Pn", "-p", port_arg, "-T4", "-oX", "-"]
+    result = tools.run("nmap", args, timeout=600)
+    if not result.get("ok"):
+        ns.errors.append("nmap failed: {}".format(
+            result.get("reason") or result.get("stderr", "")[:200]))
+        return False
+
+    xml = result.get("stdout", "")
+    parsed = tools.parse_nmap_xml(xml)
+    if not parsed:
+        # nmap ran but found nothing open. That is a real answer.
+        ns.reachable = True
+        ns.errors.append("nmap: no open ports")
+        return True
+
+    ns.reachable = True
+    for entry in parsed:
+        pr = PortResult(port=entry["port"], state=entry["state"],
+                        service=entry["service"])
+        banner = " ".join(x for x in (entry["product"], entry["version"],
+                                      entry["extra"]) if x)
+        pr.banner = banner
+        ns.open_ports.append(pr)
+    return True
 
 
 def to_dict(ns: NetworkScan) -> dict:

@@ -38,8 +38,14 @@ class WebScanner:
     def __init__(self, net=None):
         self.net = net or Fetcher()
 
-    def scan(self, base_url):
-        """Run all web-posture checks against a base URL."""
+    def scan(self, base_url, tools=None, wordlist=None):
+        """Run all web-posture checks against a base URL.
+
+        When *tools* is a ToolBridge, the Kali equivalents are used as
+        well: nikto for misconfiguration, gobuster or ffuf for content
+        discovery, whatweb for fingerprinting. Their findings are merged
+        with the built-in ones.
+        """
         findings = []
         origin = base_url if base_url.endswith("/") else base_url + "/"
 
@@ -100,5 +106,62 @@ class WebScanner:
                     "detail": "Exposed debug/management path: {} (HTTP {})".format(
                         path, f.status),
                 })
+
+        if tools is not None:
+            findings.extend(self._kali_findings(base_url, origin, tools, wordlist))
+
+        return findings
+
+    # ------------------------------------------------------------------
+    # Kali tooling
+    # ------------------------------------------------------------------
+    def _kali_findings(self, base_url, origin, tools, wordlist):
+        """Run the Kali tools that improve on the built-in web checks."""
+        findings = []
+
+        # nikto: server misconfiguration.
+        if tools.has("nikto"):
+            result = tools.run("nikto", ["-h", base_url, "-Format", "json",
+                                         "-nointeractive"], timeout=300)
+            if result.get("ok") and result.get("stdout"):
+                findings.extend(tools.parse_nikto_json(result["stdout"]))
+
+        # gobuster or ffuf: content discovery.
+        if wordlist:
+            for tool, args in (("gobuster", ["dir", "-u", base_url, "-w", wordlist,
+                                             "-q", "--no-error"]),
+                               ("ffuf", ["-u", base_url + "/FUZZ", "-w", wordlist,
+                                         "-noninteractive", "-s"])):
+                if not tools.has(tool):
+                    continue
+                result = tools.run(tool, args, timeout=300)
+                if not result.get("ok"):
+                    break
+                parsed = tools.parse_ffuf_lines(result.get("stdout", ""))
+                findings.extend(parsed)
+                break
+
+        # whatweb: technology fingerprinting.
+        if tools.has("whatweb"):
+            result = tools.run("whatweb", ["--log-json=-", base_url], timeout=120)
+            if result.get("ok") and result.get("stdout"):
+                for line in result["stdout"].splitlines():
+                    line = line.strip()
+                    if not line.startswith("{"):
+                        continue
+                    try:
+                        import json
+                        data = json.loads(line)
+                    except ValueError:
+                        continue
+                    plugins = data.get("plugins") or {}
+                    for name, details in plugins.items():
+                        findings.append({
+                            "level": "LOW",
+                            "category": "web.technology",
+                            "detail": "detected {} {}".format(
+                                name, (details or {}).get("version", "") or "").strip(),
+                        })
+                    break
 
         return findings

@@ -94,6 +94,42 @@ API and `27042` for Frida. Starting `frida-server` happens *on the
 target* over SSH — spawning it locally is the one move that looks right
 and silently does nothing.
 
+## Local privileges (root / Shizuku)
+
+The server uses the best local elevation it can find, and reports which
+tier it got in `/status` under `privileges`.
+
+| Tier | Via | Gives | Enables |
+|------|-----|-------|---------|
+| `root` | `su` | uid 0 | everything, including Frida |
+| `shizuku` | `rish` | uid 2000, shell | package enumeration, `dumpsys`, device-admin and lock-screen state |
+| `plain` | — | the app's own uid | the unprivileged posture checks and every network scanner |
+
+The tiers are **not** interchangeable. Shizuku gives shell privileges,
+which is enough to enumerate packages and read `dumpsys` output. It is
+*not* enough to ptrace another app's process, so **it does not help
+with Frida** — the target still needs root and the `frida-server` binary.
+
+Set up Shizuku so Termux can use it:
+
+```bash
+termux-setup-storage
+# In the Shizuku app: "Use Shizuku in terminal apps" -> Export files
+cp ~/storage/downloads/rish $PREFIX/bin/
+cp ~/storage/downloads/rish_shizuku.dex $PREFIX/lib/
+rish                    # first run does the binder setup
+rish -c 'id -u'         # should print 2000
+```
+
+With that in place the posture checks enumerate installed packages,
+flag Magisk/Frida/VPN apps, list debuggable apps and read the device
+administrator and lock-screen state — none of which an app-level check
+can see.
+
+**This is orthogonal to the network plane.** A VPN or WireGuard link
+carries the traffic; Shizuku only decides how much the server can see
+about its own device. Use both, for different jobs.
+
 ## Running the server on a PRoot VM (second Android)
 
 A PRoot userland on another Android makes a cheap, self-contained server.

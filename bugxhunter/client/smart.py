@@ -207,20 +207,25 @@ class SmartClient:
                 return None
         return self.frida.execute(process_name, script_path)
 
-    def scan_web(self, base_url):
+    def scan_web(self, base_url, tools=None, wordlist=None):
         """Run web posture checks against a target URL."""
         from ..scanners.web import WebScanner
-        return WebScanner().scan(base_url)
+        return WebScanner().scan(base_url, tools=tools, wordlist=wordlist)
 
-    def scan_vuln(self, url):
+    def scan_vuln(self, url, tools=None):
         """Run vulnerability probes against a target URL."""
         from ..scanners.vuln import VulnScanner
-        return VulnScanner().scan(url)
+        return VulnScanner().scan(url, tools=tools)
 
-    def scan_credentials(self, path):
+    def scan_credentials(self, path, tools=None):
         """Scan a directory for exposed credentials."""
         from ..scanners.credential import CredentialScanner
-        return CredentialScanner().scan_dir(path)
+        return CredentialScanner().scan_dir(path, tools=tools)
+
+    def scan_ports(self, host, tools=None, ports=None):
+        """Scan a host for open ports and services."""
+        from ..scanners.network import scan, to_dict
+        return to_dict(scan(host, ports=ports, tools=tools))
 
     def bug_steps(self):
         """Fetch the operator field guide from the server.
