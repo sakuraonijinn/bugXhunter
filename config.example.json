@@ -1,0 +1,6 @@
+{
+  "token": "change-me-12345",
+  "version": "1.0.0",
+  "vpn_enabled": false,
+  "frida_server_path": "/data/local/tmp/frida-server"
+}

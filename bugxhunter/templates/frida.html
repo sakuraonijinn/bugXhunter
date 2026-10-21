@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frida</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --fg: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --border: #30363d;
+    --error: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    padding: 16px;
+  }
+  h1 { font-size: 1.2rem; margin: 0 0 12px; }
+  .row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  input, button, select {
+    background: #161b22;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 0.9rem;
+  }
+  button { cursor: pointer; background: var(--accent); color: #000; border-color: var(--accent); }
+  button:hover { opacity: 0.85; }
+  #log {
+    background: #010409;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px;
+    height: 60vh;
+    overflow-y: auto;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.8rem;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .err { color: var(--error); }
+</style>
+</head>
+<body>
+<h1>Frida</h1>
+<div class="row">
+  <input id="target" placeholder="process name or pid">
+  <input id="script" placeholder="script path">
+  <button onclick="send()">Execute</button>
+  <button onclick="clearLog()">Clear</button>
+</div>
+<div class="row">
+  <button onclick="start()">Start Server</button>
+  <button onclick="stop()">Stop</button>
+  <button onclick="loadDevices()">List Devices</button>
+  <button onclick="loadProcesses()">List Processes</button>
+</div>
+<pre id="log"></pre>
+<script>
+  const log = document.getElementById('log');
+  function append(text, cls) {
+    const span = document.createElement('span');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    log.appendChild(span);
+    log.scrollTop = log.scrollHeight;
+  }
+  function clearLog() { log.innerHTML = ''; }
+  function clearInput(id) { document.getElementById(id).value = ''; }
+
+  async function send() {
+    const target = document.getElementById('target').value;
+    const script = document.getElementById('script').value;
+    append('> execute ' + target + ' ' + script + '\n', 'err');
+    try {
+      const res = await fetch('/frida/script', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target, script })
+      });
+      const data = await res.json();
+      append((data.stdout || '') + (data.stderr || ''), data.ok ? '' : 'err');
+    } catch (e) {
+      append('error: ' + e + '\n', 'err');
+    }
+  }
+
+  async function start() {
+    append('> start\n');
+    try {
+      const res = await fetch('/frida/start', { method: 'POST' });
+      append((await res.json()).reason || 'started\n');
+    } catch (e) { append('error: ' + e + '\n', 'err'); }
+  }
+
+  async function stop() {
+    append('> stop\n');
+    try {
+      const res = await fetch('/frida/stop', { method: 'POST' });
+      append((await res.json()).reason || 'stopped\n');
+    } catch (e) { append('error: ' + e + '\n', 'err'); }
+  }
+
+  async function loadDevices() {
+    append('> devices\n');
+    try {
+      const res = await fetch('/frida/devices');
+      const data = await res.json();
+      append(JSON.stringify(data.devices, null, 2) + '\n');
+    } catch (e) { append('error: ' + e + '\n', 'err'); }
+  }
+
+  async function loadProcesses() {
+    append('> processes\n');
+    try {
+      const res = await fetch('/frida/processes');
+      const data = await res.json();
+      append(JSON.stringify(data.processes, null, 2) + '\n');
+    } catch (e) { append('error: ' + e + '\n', 'err'); }
+  }
+</script>
+</body>
+</html>
