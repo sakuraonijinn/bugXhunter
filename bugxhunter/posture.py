@@ -12,6 +12,68 @@ import subprocess
 import sys
 
 
+def _proc_name(pid):
+    """The kernel's process name for *pid*, or "" if unreadable."""
+    try:
+        with open("/proc/{}/comm".format(pid), "r") as handle:
+            return handle.read().strip().lower()
+    except OSError:
+        return ""
+
+
+def _ancestors(max_depth=12):
+    """Walk up the process tree, yielding (pid, comm) pairs."""
+    pid = os.getpid()
+    seen = set()
+    for _ in range(max_depth):
+        if pid <= 1 or pid in seen:
+            return
+        seen.add(pid)
+        yield pid, _proc_name(pid)
+        try:
+            with open("/proc/{}/stat".format(pid), "r") as handle:
+                # The comm field is parenthesised and may contain spaces,
+                # so parse from the right: state is the field after it.
+                stat = handle.read()
+                ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        except (OSError, IndexError, ValueError):
+            return
+        pid = ppid
+
+
+def under_proot() -> bool:
+    """True when this process is running inside a PRoot userland.
+
+    PRoot is a ptrace-based userland emulator. A process inside it is
+    being traced by the PRoot launcher, and the guest filesystem is a
+    Linux root rather than Android's. That changes what the posture
+    checks can honestly report, so it is detected up front.
+
+    The ancestor walk matches on the kernel process name, not on
+    arbitrary command text. A substring search over a parent's cmdline
+    false-positives the moment any argument happens to contain the
+    word, which is exactly the kind of bug that makes a check worse
+    than useless.
+    """
+    # 1. Environment markers, set by proot and proot-distro.
+    if os.environ.get("PROOT_TMP_DIR") or os.environ.get("PROOT_NO_SECCOMP"):
+        return True
+    if os.environ.get("PROOT_L2S_DIR"):
+        return True
+
+    # 2. An ancestor process is actually named proot.
+    for _pid, comm in _ancestors():
+        if comm == "proot" or comm.startswith("proot-"):
+            return True
+
+    # 3. Guest filesystem marker.
+    for marker in ("/.proot", "/etc/proot-distro", "/.proot-distro"):
+        if os.path.exists(marker):
+            return True
+
+    return False
+
+
 class PostureCheck:
     """Run device posture checks and return findings."""
 
@@ -19,6 +81,7 @@ class PostureCheck:
 
     def __init__(self):
         self.findings = []
+        self.emulated = under_proot()
 
     def _add(self, level, category, detail):
         self.findings.append({
@@ -74,12 +137,28 @@ class PostureCheck:
     # Debugger / tracing
     # ------------------------------------------------------------------
     def check_debugger(self):
-        """Detect attached debuggers."""
+        """Detect attached debuggers.
+
+        Under PRoot this check is meaningless: PRoot is itself a
+        tracer, so TracerPid is always non-zero and every guest process
+        looks debugged. Reporting that as a HIGH finding would be a
+        false positive on every single run, so it is downgraded and
+        labelled instead.
+        """
         try:
             with open("/proc/self/status", "r") as handle:
                 for line in handle:
                     if line.startswith("TracerPid:") and not line.endswith("0"):
-                        self._add("HIGH", "posture.tracer", "TracerPid is non-zero")
+                        if self.emulated:
+                            self._add(
+                                "INFO", "posture.tracer",
+                                "TracerPid is non-zero, but this process is "
+                                "under PRoot, which traces every syscall. "
+                                "Not a debugger finding.",
+                            )
+                        else:
+                            self._add("HIGH", "posture.tracer",
+                                      "TracerPid is non-zero")
                         return
         except OSError:
             pass
@@ -134,10 +213,23 @@ class PostureCheck:
     # File integrity
     # ------------------------------------------------------------------
     def check_file_integrity(self):
-        """Check for tampered system binaries."""
-        # If pm is missing, the system is likely broken or heavily modified.
+        """Check for tampered system binaries.
+
+        Inside a PRoot guest the Android ``pm`` binary is not on PATH,
+        because the guest is a Linux userland. Its absence says nothing
+        about the health of the underlying Android system, so under PRoot
+        this is informational rather than a HIGH finding.
+        """
         if not shutil.which("pm"):
-            self._add("HIGH", "posture.missing_pm", "pm binary missing — system may be broken")
+            if self.emulated:
+                self._add(
+                    "INFO", "posture.missing_pm",
+                    "pm is not on PATH inside the PRoot guest. Bind the "
+                    "Android system binaries to run this check properly.",
+                )
+            else:
+                self._add("HIGH", "posture.missing_pm",
+                          "pm binary missing — system may be broken")
 
     # ------------------------------------------------------------------
     # Storage encryption
@@ -160,6 +252,15 @@ class PostureCheck:
     def run(self):
         """Run all posture checks and return findings."""
         self.findings = []
+
+        if self.emulated:
+            self._add(
+                "INFO", "posture.emulated",
+                "Running inside a PRoot userland. Checks that depend on "
+                "the Android runtime (pm, getprop, build.prop) are "
+                "degraded unless the system directories are bound in.",
+            )
+
         for name in (
             "check_root",
             "check_bootloader",

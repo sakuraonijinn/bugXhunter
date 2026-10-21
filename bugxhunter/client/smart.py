@@ -18,7 +18,7 @@ import json
 import time
 
 from .reverse_ssh import ReverseSSH
-from ..frida import FridaClient
+from ..frida import FridaClient, FRIDA_PORT
 from ..posture import PostureCheck
 from ..vpn import status as vpn_status
 
@@ -31,7 +31,8 @@ class SmartClient:
     SERVER_PORT = 7080
 
     def __init__(self, host, token=None, ssh_host=None, ssh_port=22,
-                 ssh_user=None, ssh_key=None, timeout_ms=8000):
+                 ssh_user=None, ssh_key=None, timeout_ms=8000,
+                 frida_host="127.0.0.1", frida_port=FRIDA_PORT):
         self.host = host
         self.token = token
         self.ssh_host = ssh_host
@@ -40,7 +41,7 @@ class SmartClient:
         self.ssh_key = ssh_key
         self.timeout_ms = timeout_ms
 
-        self.frida = FridaClient()
+        self.frida = FridaClient(host=frida_host, port=frida_port)
         self.tunnel = None
         self._ready = False
         self._server_ready = False
@@ -145,6 +146,16 @@ class SmartClient:
             "su -c '/data/local/tmp/frida-server --no-pause &' "
             "|| /data/local/tmp/frida-server --no-pause &"
         )
+
+    def set_frida_host(self, host, port=None):
+        """Point the Frida client at a different host.
+
+        Needed when the bugXhunter server runs in a PRoot VM: the VM
+        cannot host a frida-server, so it drives one running natively
+        on the target.
+        """
+        self.frida = FridaClient(host=host, port=port or self.FRIDA_PORT)
+        return self.frida.status()
 
     def _ping(self):
         """Check whether the server is reachable."""

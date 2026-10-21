@@ -163,6 +163,52 @@ GUIDE = {
             "verify": "curl /frida/status  ->  running:false",
         },
     ],
+    "deployment_profiles": {
+        "proot-vm": {
+            "summary": (
+                "bugXhunter on a second Android, inside a PRoot userland. "
+                "The VM is a Linux box that cannot host a frida-server, so "
+                "it drives one running natively on the target instead."
+            ),
+            "install": [
+                "pkg install proot proot-distro termux-api",
+                "proot-distro install ubuntu",
+                "proot-distro login ubuntu",
+                "apt update && apt install -y python3 python3-pip",
+                "pip3 install uvicorn starlette aiohttp",
+                "git clone https://github.com/bugtraqapps/bugxhunter && cd bugxhunter",
+                "cp config.example.json config.json   # set the token",
+            ],
+            "binds": [
+                "# Termux prefix, so termux-* tools and pkg work in the guest",
+                "proot-distro login ubuntu --bind /data/data/com.termux/files/usr",
+                "# Android system binaries, so getprop and pm work",
+                "proot-distro login ubuntu --bind /system --bind /property",
+            ],
+            "run": [
+                "export AUTH_TOKEN=your-token",
+                "# frida_host points at the target, not at the VM",
+                "python3 -m bugxhunter.server --host 0.0.0.0 --port 7080 \\",
+                "  --frida-host 10.0.0.42",
+            ],
+            "caveats": [
+                "A frida-server cannot run inside PRoot: PRoot already holds "
+                "the ptrace slot, so a guest server cannot instrument a host "
+                "process. The VM is a Frida *client* only.",
+                "TracerPid is always non-zero under PRoot, because PRoot is "
+                "the tracer. The posture check reports this as INFO, not a "
+                "HIGH debugger finding.",
+                "pm and getprop are absent from a bare guest, so the "
+                "root, bootloader and encryption checks degrade. Bind "
+                "/system and /property to get them working.",
+                "Network syscalls pass through unharmed, so binding "
+                "0.0.0.0:7080 and making outbound requests both work "
+                "normally.",
+                "Everything runs slower under ptrace. Lower the scanner "
+                "timeout rather than letting probes pile up.",
+            ],
+        },
+    },
     "endpoints": {
         "public": ["GET /health"],
         "token": [

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from .config import Config, load as load_config
 from .frida import FridaClient
-from .posture import PostureCheck
+from .posture import PostureCheck, under_proot
 from .scanners.credential import CredentialScanner
 from .steps import guide as bug_steps_guide
 from .scanners.config_audit import ConfigAudit
@@ -38,7 +38,7 @@ class Server:
 
     def __init__(self, config: Config):
         self.config = config
-        self.frida = FridaClient()
+        self.frida = FridaClient(host=config.frida_host, port=config.frida_port)
         self._handlers = {
             "GET": {
                 "/health": self._health,
@@ -108,14 +108,15 @@ class Server:
     # Endpoints
     # ------------------------------------------------------------------
     def _health(self, handler, body):
-        return {"ok": True, "version": "1.0.0"}
+        return {"ok": True, "version": self.config.version}
 
     def _status(self, handler, body):
         return {
-            "version": "1.0.0",
+            "version": self.config.version,
             "frida": self.frida.status(),
             "vpn": vpn_status(),
             "termux": termux_available(),
+            "emulated": under_proot(),
         }
 
     def _diagnose(self, handler, body):
@@ -163,119 +164,119 @@ def make_server(config: Config):
     return Server(config)
 
 
-# Module-level config + server, used by the ASGI `app` below.
+def make_app(config: Config):
+    """Build the ASGI application for a given config.
+
+    The app is built from the config rather than reading a module global,
+    so that command-line overrides actually take effect. Previously the
+    routes closed over a module-level config loaded at import time, and
+    main() then served that app instead of the one it had just built,
+    which meant --token and --frida-host were silently ignored.
+    """
+    server = make_server(config)
+
+    async def _health_route(request):
+        return JSONResponse(server._health(None, b""))
+
+    async def _status_route(request):
+        return JSONResponse(server._status(None, b""))
+
+    async def _diagnose_route(request):
+        return JSONResponse(server._diagnose(None, b""))
+
+    async def _frida_status_route(request):
+        return JSONResponse(server._frida_status(None, b""))
+
+    async def _frida_devices_route(request):
+        return JSONResponse(server._frida_devices(None, b""))
+
+    async def _frida_processes_route(request):
+        return JSONResponse(server._frida_processes(None, b""))
+
+    async def _frida_results_route(request):
+        return JSONResponse(server._frida_results(None, b""))
+
+    async def _frida_start_route(request):
+        body = await request.body()
+        return JSONResponse(server._frida_start(None, body))
+
+    async def _frida_stop_route(request):
+        body = await request.body()
+        return JSONResponse(server._frida_stop(None, body))
+
+    async def _frida_script_route(request):
+        body = await request.body()
+        return JSONResponse(server._frida_script(None, body))
+
+    async def _frida_page_route(request):
+        token = request.query_params.get("token", "")
+        if config.auth_token and token != config.auth_token:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        page = Path(__file__).parent / "templates" / "frida.html"
+        return FileResponse(page)
+
+    async def _bug_steps_route(request):
+        """Hidden endpoint: the operator field guide."""
+        return JSONResponse(server._bug_steps(None, b""))
+
+    routes = [
+        Route("/health", _health_route, methods=["GET"]),
+        Route("/status", _status_route, methods=["GET"]),
+        Route("/diagnose", _diagnose_route, methods=["GET"]),
+        Route("/frida/status", _frida_status_route, methods=["GET"]),
+        Route("/frida/devices", _frida_devices_route, methods=["GET"]),
+        Route("/frida/processes", _frida_processes_route, methods=["GET"]),
+        Route("/frida/results", _frida_results_route, methods=["GET"]),
+        Route("/frida/start", _frida_start_route, methods=["POST"]),
+        Route("/frida/stop", _frida_stop_route, methods=["POST"]),
+        Route("/frida/script", _frida_script_route, methods=["POST"]),
+        Route("/frida/page", _frida_page_route, methods=["GET"]),
+        # Hidden: the operator field guide. Deliberately last in the list
+        # and absent from /status, so a casual endpoint sweep will not
+        # find it.
+        Route("/bugSteps", _bug_steps_route, methods=["GET", "POST"]),
+    ]
+
+    class AuthMiddleware:
+        """Reject requests without a valid X-Auth-Token (except /health)."""
+
+        def __init__(self, app):
+            self.app = app
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] != "http":
+                await self.app(scope, receive, send)
+                return
+            path = scope.get("path", "")
+            if path == "/health":
+                await self.app(scope, receive, send)
+                return
+            headers = dict(scope.get("headers") or [])
+            token = headers.get(b"x-auth-token", b"").decode()
+            if config.auth_token and token != config.auth_token:
+                await send({
+                    "type": "http.response.start",
+                    "status": 401,
+                    "headers": [(b"content-type", b"application/json")],
+                })
+                await send({
+                    "type": "http.response.body",
+                    "body": b'{"error": "unauthorized"}',
+                })
+                return
+            await self.app(scope, receive, send)
+
+    application = Starlette(routes=routes)
+    application.add_middleware(CORSMiddleware, allow_origins=["*"],
+                                allow_methods=["*"], allow_headers=["*"])
+    application.add_middleware(AuthMiddleware)
+    return application
+
+
+# Module-level config + app, for `uvicorn bugxhunter.server:app`.
 _config = load_config()
 _server = make_server(_config)
-
-
-async def _health_route(request):
-    return JSONResponse(_server._health(None, b""))
-
-
-async def _status_route(request):
-    return JSONResponse(_server._status(None, b""))
-
-
-async def _diagnose_route(request):
-    return JSONResponse(_server._diagnose(None, b""))
-
-
-async def _frida_status_route(request):
-    return JSONResponse(_server._frida_status(None, b""))
-
-
-async def _frida_devices_route(request):
-    return JSONResponse(_server._frida_devices(None, b""))
-
-
-async def _frida_processes_route(request):
-    return JSONResponse(_server._frida_processes(None, b""))
-
-
-async def _frida_results_route(request):
-    return JSONResponse(_server._frida_results(None, b""))
-
-
-async def _frida_start_route(request):
-    body = await request.body()
-    return JSONResponse(_server._frida_start(None, body))
-
-
-async def _frida_stop_route(request):
-    body = await request.body()
-    return JSONResponse(_server._frida_stop(None, body))
-
-
-async def _frida_script_route(request):
-    body = await request.body()
-    return JSONResponse(_server._frida_script(None, body))
-
-
-async def _frida_page_route(request):
-    token = request.query_params.get("token", "")
-    if _config.auth_token and token != _config.auth_token:
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
-    page = Path(__file__).parent / "templates" / "frida.html"
-    return FileResponse(page)
-
-
-async def _bug_steps_route(request):
-    """Hidden endpoint: the operator field guide."""
-    return JSONResponse(_server._bug_steps(None, b""))
-
-
-routes = [
-    Route("/health", _health_route, methods=["GET"]),
-    Route("/status", _status_route, methods=["GET"]),
-    Route("/diagnose", _diagnose_route, methods=["GET"]),
-    Route("/frida/status", _frida_status_route, methods=["GET"]),
-    Route("/frida/devices", _frida_devices_route, methods=["GET"]),
-    Route("/frida/processes", _frida_processes_route, methods=["GET"]),
-    Route("/frida/results", _frida_results_route, methods=["GET"]),
-    Route("/frida/start", _frida_start_route, methods=["POST"]),
-    Route("/frida/stop", _frida_stop_route, methods=["POST"]),
-    Route("/frida/script", _frida_script_route, methods=["POST"]),
-    Route("/frida/page", _frida_page_route, methods=["GET"]),
-    # Hidden: the operator field guide. Deliberately last in the list and
-    # absent from /status, so a casual endpoint sweep will not find it.
-    Route("/bugSteps", _bug_steps_route, methods=["GET", "POST"]),
-]
-
-
-class AuthMiddleware:
-    """Reject requests without a valid X-Auth-Token (except /health)."""
-
-    def __init__(self, app):
-        self.app = app
-
-    async def __call__(self, scope, receive, send):
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-        path = scope.get("path", "")
-        if path == "/health":
-            await self.app(scope, receive, send)
-            return
-        headers = dict(scope.get("headers") or [])
-        token = headers.get(b"x-auth-token", b"").decode()
-        if _config.auth_token and token != _config.auth_token:
-            await send({
-                "type": "http.response.start",
-                "status": 401,
-                "headers": [(b"content-type", b"application/json")],
-            })
-            await send({
-                "type": "http.response.body",
-                "body": b'{"error": "unauthorized"}',
-            })
-            return
-        await self.app(scope, receive, send)
-
-
-app = Starlette(routes=routes)
-app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"],
-                   allow_headers=["*"])
-app.add_middleware(AuthMiddleware)
+app = make_app(_config)
 
 
 def main():
@@ -285,11 +286,15 @@ def main():
     parser.add_argument("--config", default=None)
     parser.add_argument("--token", default=None)
     parser.add_argument("--vpn", action="store_true")
+    parser.add_argument("--frida-host", default=None,
+                        help="frida-server host (default: this machine)")
     args = parser.parse_args()
 
     config = load_config(args.config)
     if args.token:
         config.auth_token = args.token
+    if args.frida_host:
+        config.frida_host = args.frida_host
     config.vpn_enabled = args.vpn
 
     server = make_server(config)
@@ -300,11 +305,16 @@ def main():
         route_all_through_tunnel()
 
     # Start Frida server if not running.
-    if not server.frida.status().get("running"):
+    #
+    # Only in local mode. A remote frida-server belongs on the target,
+    # and a PRoot guest cannot host one at all.
+    if server.frida.is_local and not server.frida.status().get("running"):
         server.frida.start()
 
     import uvicorn
-    uvicorn.run(app, host=args.host, port=args.port)
+    # Serve an app built from THIS config, so --token, --frida-host and
+    # --vpn actually take effect.
+    uvicorn.run(make_app(config), host=args.host, port=args.port)
 
 
 if __name__ == "__main__":

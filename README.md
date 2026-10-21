@@ -94,6 +94,53 @@ API and `27042` for Frida. Starting `frida-server` happens *on the
 target* over SSH — spawning it locally is the one move that looks right
 and silently does nothing.
 
+## Running the server on a PRoot VM (second Android)
+
+A PRoot userland on another Android makes a cheap, self-contained server.
+It is a Linux box, though, and three things follow from that.
+
+**A frida-server cannot run inside PRoot.** PRoot already occupies the
+ptrace slot, so a frida-server spawned in the guest cannot instrument a
+host process. The VM must therefore be a Frida *client*: point it at a
+frida-server running natively on the target.
+
+```bash
+pkg install proot proot-distro termux-api
+proot-distro install ubuntu
+proot-distro login ubuntu
+
+apt update && apt install -y python3 python3-pip
+pip3 install uvicorn starlette aiohttp
+git clone https://github.com/bugtraqapps/bugxhunter && cd bugxhunter
+cp config.example.json config.json    # set the token
+```
+
+Bind the Termux prefix so `termux-*` tools and `pkg` work in the guest,
+and bind `/system` and `/property` so `pm` and `getprop` work:
+
+```bash
+proot-distro login ubuntu --bind /data/data/com.termux/files/usr
+proot-distro login ubuntu --bind /system --bind /property
+```
+
+Then point the Frida client at the target and start the server:
+
+```bash
+export AUTH_TOKEN=your-token
+python3 -m bugxhunter.server --host 0.0.0.0 --port 7080 --frida-host 10.0.0.42
+```
+
+| | Native Android / Termux | PRoot VM |
+|---|---|---|
+| Frida | spawns `frida-server` locally | drives a remote one; `start()` refuses with a reason |
+| Network | works | works — socket syscalls pass through |
+| `TracerPid` check | meaningful | always non-zero, PRoot is the tracer → reported as INFO |
+| `pm` / `getprop` checks | meaningful | degrade to INFO unless `/system` is bound |
+| Speed | native | slower, everything is under ptrace |
+
+`/status` reports `emulated: true` when it detects a PRoot userland, and
+`frida.mode` reports `local` or `remote`.
+
 ## Operator CLI
 
 ```bash
