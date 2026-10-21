@@ -23,8 +23,8 @@ from .scanners.config_audit import ConfigAudit
 from .scanners.network import NetworkScan
 from .scanners.vuln import VulnScanner
 from .scanners.web import WebScanner
-from .termux import Termux
-from .vpn import VPN
+from .termux import termux_available
+from .vpn import status as vpn_status, active_mode, proxy_url
 
 
 class Server:
@@ -104,8 +104,8 @@ class Server:
         return {
             "version": self.config.version,
             "frida": self.frida.status(),
-            "vpn": self.config.vpn_enabled,
-            "termux": Termux.available(),
+            "vpn": vpn_status(),
+            "termux": termux_available(),
         }
 
     def _diagnose(self, handler, body):
@@ -167,8 +167,8 @@ def main():
 
     # Start VPN tunnel if requested.
     if config.vpn_enabled:
-        vpn = VPN(config)
-        vpn.start()
+        from .vpn import route_all_through_tunnel
+        route_all_through_tunnel()
 
     # Start Frida server if not running.
     if not server.frida.status().get("running"):

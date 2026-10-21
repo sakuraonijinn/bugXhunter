@@ -20,6 +20,7 @@ import time
 from .reverse_ssh import ReverseSSH
 from ..frida import FridaClient
 from ..posture import PostureCheck
+from ..vpn import status as vpn_status
 
 
 class SmartClient:

@@ -8,10 +8,10 @@ Each scanner is a self-contained module that:
 They are pure Python with no third-party deps so they run on Termux.
 """
 
-from .network import NetworkScanner
+from .network import NetworkScan
 from .web import WebScanner
 from .vuln import VulnScanner
 from .credential import CredentialScanner
 from .config_audit import ConfigAudit
 
-__all__ = ["NetworkScanner", "WebScanner", "VulnScanner", "CredentialScanner", "ConfigAudit"]
+__all__ = ["NetworkScan", "WebScanner", "VulnScanner", "CredentialScanner", "ConfigAudit"]
