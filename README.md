@@ -210,6 +210,35 @@ POST /hooks/run         {"hook": "...", "target": "com.example.app"}
 
 **Why not gists.** A gist is mutable and has no history, so "the script was in a gist" is not evidence of what ran against a target. A gist URL fetched at execution time is a remote-code-execution path by design — anyone who can edit the gist runs code on your target. Here every hook carries a SHA-256 and the library carries a version that is the hash of all of them, so a finding cites an exact script and two runs of the same version are comparable.
 
+### Checking the hooks without a device
+
+The hooks need a live app to run against, which makes it easy to ship one that never installs a single hook. `xbug hooks lint` checks them statically:
+
+```bash
+$ xbug hooks lint
+{"checked": 10, "failed": 0, "results": []}
+```
+
+It catches the failure modes that otherwise only show up on a target:
+
+- **syntax errors** — parsed with `node --check`
+- **hooks on a dispatcher** — `X.method.overload(...).implementation = ...` throws at runtime when the method is overloaded; the overload has to be saved first
+- **self-recursion** — a replacement that calls the method it replaces
+- **the same method hooked twice** in one file, which nests the replacements
+- **no `Purpose:`/`Usage:` header**, so a reader cannot tell what the script does
+
+Each hook is also required to print a completion message, so a *partial* install is visible in the output rather than looking like a clean run. A hook that skips a target says so:
+
+```
+[ssl-pinning] skipped com.android.org.conscrypt.TrustManagerImpl.checkTrustedRecursive: ...
+```
+
+When a hook fails with "no such overload", the reason is almost always a version difference. `discover_overloads` prints the real signatures for the build you actually have:
+
+```bash
+xbug hooks run discover_overloads --target com.example.app --class com.example.Api
+```
+
 ## Dropping the agent on a target
 
 The client is **stdlib-only** — no third-party imports anywhere in `bugxhunter/client/`. So the target needs nothing but Python 3 and SSH. No git, no pip, no packages.

@@ -35,12 +35,14 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var KeyStore = Java.use('java.security.KeyStore');
-        KeyStore.getInstance.overload('java.lang.String').implementation = function (type) {
+        var getInstance = KeyStore.getInstance.overload('java.lang.String');
+        getInstance.implementation = function (type) {
             console.log('[keystore] getInstance(' + type + ')');
-            return this.getInstance(type);
+            return getInstance.call(this, type);
         };
-        KeyStore.getKey.overload('java.lang.String', '[C').implementation = function (alias, password) {
-            var key = this.getKey(alias, password);
+        var getKey = KeyStore.getKey.overload('java.lang.String', '[C');
+        getKey.implementation = function (alias, password) {
+            var key = getKey.call(this, alias, password);
             if (key !== null) {
                 console.log('[keystore] getKey alias=' + alias + ' ' + props(key));
             } else {
@@ -55,12 +57,13 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var SecretKeyFactory = Java.use('javax.crypto.SecretKeyFactory');
-        SecretKeyFactory.generateSecret.overload('java.security.spec.KeySpec')
-            .implementation = function (spec) {
-                var key = this.generateSecret(spec);
-                console.log('[keystore] generateSecret ' + props(key));
-                return key;
-            };
+        var generateSecret = SecretKeyFactory.generateSecret.overload(
+            'java.security.spec.KeySpec');
+        generateSecret.implementation = function (spec) {
+            var key = generateSecret.call(this, spec);
+            console.log('[keystore] generateSecret ' + props(key));
+            return key;
+        };
     } catch (e) { /* not present */ }
 
     // ------------------------------------------------------------------
@@ -68,12 +71,13 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var KeyPairGenerator = Java.use('java.security.KeyPairGenerator');
-        KeyPairGenerator.initialize.overload('java.security.spec.AlgorithmParameterSpec')
-            .implementation = function (spec) {
-                console.log('[keystore] KeyPairGenerator.initialize ' +
-                            (spec ? spec.getClass().getName() : 'default'));
-                return this.initialize(spec);
-            };
+        var initialize = KeyPairGenerator.initialize.overload(
+            'java.security.spec.AlgorithmParameterSpec');
+        initialize.implementation = function (spec) {
+            console.log('[keystore] KeyPairGenerator.initialize ' +
+                        (spec ? spec.getClass().getName() : 'default'));
+            return initialize.call(this, spec);
+        };
     } catch (e) { /* not present */ }
 
     // ------------------------------------------------------------------
@@ -81,9 +85,10 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var AndroidKeyStore = Java.use('android.security.keystore.AndroidKeyStore');
-        AndroidKeyStore.getInstance.overload().implementation = function () {
+        var getAKS = AndroidKeyStore.getInstance.overload();
+        getAKS.implementation = function () {
             console.log('[keystore] AndroidKeyStore requested');
-            return this.getInstance();
+            return getAKS.call(this);
         };
     } catch (e) { /* not present */ }
 
@@ -92,8 +97,9 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var KeyInfo = Java.use('android.security.keystore.KeyInfo');
-        KeyInfo.getSecurityLevel.implementation = function () {
-            var level = this.getSecurityLevel();
+        var getSecurityLevel = KeyInfo.getSecurityLevel.overload();
+        getSecurityLevel.implementation = function () {
+            var level = getSecurityLevel.call(this);
             console.log('[keystore] KeyInfo securityLevel=' + level);
             return level;
         };

@@ -18,29 +18,19 @@ Java.perform(function () {
         try {
             var FileInputStream = Java.use('java.io.FileInputStream');
             var fis = FileInputStream.$new(path);
-            var bytes = Java.use('java.nio.file.Files').readAllBytes(
-                fis.$cast('java.nio.file.Path')));
-            fis.close();
-            return String(Java.use('java.lang.String').$new(bytes));
-        } catch (e) {
-            // Older Android has no java.nio.file.Files. Read by hand.
-            try {
-                var FileInputStream = Java.use('java.io.FileInputStream');
-                var fis = FileInputStream.$new(path);
-                var BufferedReader = Java.use('java.io.BufferedReader');
-                var InputStreamReader = Java.use('java.io.InputStreamReader');
-                var reader = BufferedReader.$new(InputStreamReader.$new(fis));
-                var line = reader.readLine();
-                var out = '';
-                while (line !== null) {
-                    out += line + '\n';
-                    line = reader.readLine();
-                }
-                reader.close();
-                return out;
-            } catch (e2) {
-                return '<unreadable: ' + e2 + '>';
+            var BufferedReader = Java.use('java.io.BufferedReader');
+            var InputStreamReader = Java.use('java.io.InputStreamReader');
+            var reader = BufferedReader.$new(InputStreamReader.$new(fis));
+            var line = reader.readLine();
+            var out = '';
+            while (line !== null) {
+                out += line + '\n';
+                line = reader.readLine();
             }
+            reader.close();
+            return out;
+        } catch (e) {
+            return '<unreadable: ' + e + '>';
         }
     }
 
@@ -74,11 +64,11 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var Editor = Java.use('android.content.SharedPreferences$Editor');
-        Editor.putString.overload('java.lang.String', 'java.lang.String')
-            .implementation = function (key, value) {
-                console.log('[prefs] putString ' + key + ' = ' + value);
-                return this.putString(key, value);
-            };
+        var putString = Editor.putString.overload('java.lang.String', 'java.lang.String');
+        putString.implementation = function (key, value) {
+            console.log('[prefs] putString ' + key + ' = ' + value);
+            return putString.call(this, key, value);
+        };
     } catch (e) { /* not present */ }
 
     console.log('[prefs] hooks installed');

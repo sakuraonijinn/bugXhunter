@@ -36,9 +36,10 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var File = Java.use('java.io.File');
-        File.exists.implementation = function (path) {
-            var result = this.exists();
-            var p = String(path);
+        var exists = File.exists.overload();
+        exists.implementation = function () {
+            var result = exists.call(this);
+            var p = String(this.getAbsolutePath());
             for (var i = 0; i < ROOT_PATHS.length; i++) {
                 if (p === ROOT_PATHS[i]) {
                     console.log('[root-detect] File.exists("' + p + '") -> ' + result);
@@ -48,7 +49,7 @@ Java.perform(function () {
             return result;
         };
     } catch (e) {
-        console.log('[root-detect] could not hook java.io.File: ' + e);
+        console.log('[root-detect] could not hook java.io.File.exists: ' + e);
     }
 
     // ------------------------------------------------------------------
@@ -56,12 +57,13 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var Runtime = Java.use('java.lang.Runtime');
-        Runtime.exec.overload('java.lang.String').implementation = function (cmd) {
+        var exec = Runtime.exec.overload('java.lang.String');
+        exec.implementation = function (cmd) {
             if (cmd && /su|busybox|which\s+su|magisk|supersu/i.test(String(cmd))) {
                 console.log('[root-detect] Runtime.exec: ' + cmd);
                 trace('Runtime.exec(' + cmd + ')');
             }
-            return this.exec(cmd);
+            return exec.call(this, cmd);
         };
     } catch (e) { /* not present */ }
 
@@ -70,8 +72,9 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var SystemProperties = Java.use('android.os.SystemProperties');
-        SystemProperties.get.overload('java.lang.String').implementation = function (key) {
-            var value = this.get(key);
+        var getProp = SystemProperties.get.overload('java.lang.String');
+        getProp.implementation = function (key) {
+            var value = getProp.call(this, key);
             if (/debuggable|secure|build\.type|ro\./i.test(String(key))) {
                 console.log('[root-detect] SystemProperties.get("' + key + '") = ' + value);
             }
@@ -85,12 +88,12 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var PackageManager = Java.use('android.content.pm.PackageManager');
-        PackageManager.getInstallerPackageName.overload('java.lang.String')
-            .implementation = function (pkg) {
-                var value = this.getInstallerPackageName(pkg);
-                console.log('[root-detect] getInstallerPackageName("' + pkg + '") = ' + value);
-                return value;
-            };
+        var installer = PackageManager.getInstallerPackageName.overload('java.lang.String');
+        installer.implementation = function (pkg) {
+            var value = installer.call(this, pkg);
+            console.log('[root-detect] getInstallerPackageName("' + pkg + '") = ' + value);
+            return value;
+        };
     } catch (e) { /* not present */ }
 
     console.log('[root-detect] hooks installed');

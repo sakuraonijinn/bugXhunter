@@ -27,9 +27,10 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var FileInputStream = Java.use('java.io.FileInputStream');
-        FileInputStream.$init.overload('java.lang.String').implementation = function (path) {
+        var fisInit = FileInputStream.$init.overload('java.lang.String');
+        fisInit.implementation = function (path) {
             report(path, 'read');
-            return this.$init(path);
+            return fisInit.call(this, path);
         };
     } catch (e) { /* not present */ }
 
@@ -38,13 +39,15 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var FileOutputStream = Java.use('java.io.FileOutputStream');
-        FileOutputStream.$init.overload('java.lang.String').implementation = function (path) {
+        var fosInit = FileOutputStream.$init.overload('java.lang.String');
+        fosInit.implementation = function (path) {
             report(path, 'write');
-            return this.$init(path);
+            return fosInit.call(this, path);
         };
-        FileOutputStream.$init.overload('java.lang.String', 'boolean').implementation = function (path, append) {
+        var fosInitAppend = FileOutputStream.$init.overload('java.lang.String', 'boolean');
+        fosInitAppend.implementation = function (path, append) {
             report(path, 'write' + (append ? '-append' : ''));
-            return this.$init(path, append);
+            return fosInitAppend.call(this, path, append);
         };
     } catch (e) { /* not present */ }
 
@@ -53,15 +56,17 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var SQLiteDatabase = Java.use('android.database.sqlite.SQLiteDatabase');
-        SQLiteDatabase.execSQL.overload('java.lang.String').implementation = function (sql) {
+        var execSQL = SQLiteDatabase.execSQL.overload('java.lang.String');
+        execSQL.implementation = function (sql) {
             console.log('[file] sql: ' + sql);
-            return this.execSQL(sql);
+            return execSQL.call(this, sql);
         };
-        SQLiteDatabase.rawQuery.overload('java.lang.String', '[Ljava.lang.String;')
-            .implementation = function (sql, args) {
-                console.log('[file] query: ' + sql);
-                return this.rawQuery(sql, args);
-            };
+        var rawQuery = SQLiteDatabase.rawQuery.overload(
+            'java.lang.String', '[Ljava.lang.String;');
+        rawQuery.implementation = function (sql, args) {
+            console.log('[file] query: ' + sql);
+            return rawQuery.call(this, sql, args);
+        };
     } catch (e) { /* not present */ }
 
     // ------------------------------------------------------------------
@@ -69,9 +74,10 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var File = Java.use('java.io.File');
-        File.delete.implementation = function () {
+        var del = File.delete.overload();
+        del.implementation = function () {
             report(this.getAbsolutePath(), 'delete');
-            return this.delete();
+            return del.call(this);
         };
     } catch (e) { /* not present */ }
 

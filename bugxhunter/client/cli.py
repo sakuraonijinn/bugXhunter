@@ -103,6 +103,19 @@ def cmd_hooks(args, client):
     from ..hooks import HookLibrary
     library = HookLibrary()
 
+    if args.hooks_action == "lint":
+        from ..hooks.lint import lint_directory
+        results = lint_directory()
+        failed = [r for r in results if not r.ok]
+        _print({
+            "checked": len(results),
+            "failed": len(failed),
+            "results": [r.as_dict() for r in results if not r.ok or r.warnings],
+        })
+        if failed:
+            raise SystemExit(1)
+        return
+
     if args.hooks_action == "list":
         manifest = library.manifest()
         _print({
@@ -235,6 +248,7 @@ def build_parser():
     hooks = sub.add_parser("hooks", help="the Frida hook library")
     hooks_sub = hooks.add_subparsers(dest="hooks_action", required=True)
     hooks_sub.add_parser("list", help="list the hooks with their hashes")
+    hooks_sub.add_parser("lint", help="statically check the hooks")
     hs = hooks_sub.add_parser("show", help="show one hook")
     hs.add_argument("name", help="hook name, with or without the .js")
     hp = hooks_sub.add_parser("pull", help="copy the hooks to a directory")

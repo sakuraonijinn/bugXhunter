@@ -1,0 +1,114 @@
+name: build
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # The server is pure Python apart from starlette and uvicorn, so it is
+  # tested on a bare JDK-style runner with no Android involved.
+  server:
+    name: server and client
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install uvicorn starlette aiohttp
+
+      - name: Import every module
+        run: |
+          python3 - <<'PY'
+          import importlib
+          mods = [
+              'bugxhunter.config', 'bugxhunter.steps', 'bugxhunter.frida',
+              'bugxhunter.posture', 'bugxhunter.termux', 'bugxhunter.vpn',
+              'bugxhunter.http', 'bugxhunter.tools', 'bugxhunter.privileges',
+              'bugxhunter.server', 'bugxhunter.hooks',
+              'bugxhunter.client.smart', 'bugxhunter.client.reverse_ssh',
+              'bugxhunter.client.cli', 'bugxhunter.client.drop',
+              'bugxhunter.scanners.network', 'bugxhunter.scanners.web',
+              'bugxhunter.scanners.vuln', 'bugxhunter.scanners.credential',
+              'bugxhunter.scanners.config_audit',
+          ]
+          for m in mods:
+              importlib.import_module(m)
+          print('all %d modules import cleanly' % len(mods))
+          PY
+
+      - name: Lint the Frida hook library
+        run: |
+          # The hooks need a device to run against, so they are checked
+          # statically instead: syntax, hooks installed on a dispatcher
+          # rather than a named overload, and replacements that call the
+          # method they replace.
+          python3 -m bugxhunter.client hooks lint
+          echo "  ok   hook library clean"
+
+      - name: Check the operator CLI
+        env:
+          BUGXHUNTER_HOST: http://127.0.0.1:7080
+          BUGXUNTER_TOKEN: testtoken12345
+        run: |
+          python3 -m bugxhunter.client steps > /dev/null
+          echo "  ok   xbug steps (works with no server)"
+          python3 -m bugxhunter.client tools > /dev/null
+          echo "  ok   xbug tools"
+          python3 -m bugxhunter.client hooks list > /dev/null
+          echo "  ok   xbug hooks list"
+
+      - name: Build the droppable agent bundle
+        run: |
+          # The bundle has to run on a device with nothing but Python 3,
+          # so it is extracted and run here to prove it.
+          python3 -m bugxhunter.client drop > /dev/null
+          mkdir -p /tmp/drop
+          tar xzf "$(python3 -c 'from bugxhunter.client.drop import Dropper; print(Dropper().build("/tmp/drop"))')" -C /tmp/drop
+          cd /tmp/drop
+          python3 -m bugxhunter.client hooks list | head -c 120
+          echo ""
+          echo "  ok   bundle runs standalone"
+
+      - name: Test the server
+        env:
+          AUTH_TOKEN: testtoken12345
+        run: |
+          python3 -m uvicorn bugxhunter.server:app --host 127.0.0.1 --port 7080 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:7080/health >/dev/null && break
+            sleep 1
+          done
+
+          check() { # name expected actual
+            if [ "$2" = "$3" ]; then
+              echo "  ok   $1 ($3)"
+            else
+              echo "  FAIL $1: expected $2, got $3"
+              exit 1
+            fi
+          }
+
+          check "health (public)"      200 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7080/health)"
+          check "status (no token)"    401 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7080/status)"
+          check "status (bad token)"   401 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: wrong' http://127.0.0.1:7080/status)"
+          check "status (good token)"  200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/status)"
+          check "diagnose"             200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/diagnose)"
+          check "tools"                200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/tools)"
+          check "hooks"                200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/hooks)"
+          check "hooks/{name}"         200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/hooks/root_detection)"
+          check "bugSteps (no token)"  401 "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7080/bugSteps)"
+          check "bugSteps (token)"     200 "$(curl -s -o /dev/null -w '%{http_code}' -H 'X-Auth-Token: testtoken12345' http://127.0.0.1:7080/bugSteps)"

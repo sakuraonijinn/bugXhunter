@@ -45,7 +45,8 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var OkHttpClient = Java.use('okhttp3.OkHttpClient');
-        OkHttpClient.newCall.overload('okhttp3.Request').implementation = function (request) {
+        var newCall = OkHttpClient.newCall.overload('okhttp3.Request');
+        newCall.implementation = function (request) {
             try {
                 var method = request.method();
                 var url = request.url().toString();
@@ -53,14 +54,15 @@ Java.perform(function () {
                 console.log('[net] okhttp ' + method + ' ' + url +
                             ' headers{' + headers + '}');
             } catch (e) { /* keep going */ }
-            return this.newCall(request);
+            return newCall.call(this, request);
         };
     } catch (e) { /* OkHttp not present */ }
 
     try {
         var ResponseBody = Java.use('okhttp3.ResponseBody');
-        ResponseBody.string.implementation = function () {
-            var out = this.string();
+        var toString = ResponseBody.string.overload();
+        toString.implementation = function () {
+            var out = toString.call(this);
             console.log('[net] okhttp response body: ' +
                         out.substring(0, Math.min(out.length, 300)));
             return out;
@@ -72,8 +74,9 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var URL = Java.use('java.net.URL');
-        URL.openConnection.overload().implementation = function () {
-            var conn = this.openConnection();
+        var openConnection = URL.openConnection.overload();
+        openConnection.implementation = function () {
+            var conn = openConnection.call(this);
             console.log('[net] URL.openConnection ' + this.toString());
             return conn;
         };
@@ -81,8 +84,9 @@ Java.perform(function () {
 
     try {
         var HttpURLConnection = Java.use('java.net.HttpURLConnection');
-        HttpURLConnection.getResponseCode.implementation = function () {
-            var code = this.getResponseCode();
+        var getResponseCode = HttpURLConnection.getResponseCode.overload();
+        getResponseCode.implementation = function () {
+            var code = getResponseCode.call(this);
             console.log('[net] http ' + this.getRequestMethod() + ' ' +
                         this.getURL().toString() + ' -> ' + code);
             return code;
@@ -94,9 +98,10 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var WebView = Java.use('android.webkit.WebView');
-        WebView.loadUrl.overload('java.lang.String').implementation = function (url) {
+        var loadUrl = WebView.loadUrl.overload('java.lang.String');
+        loadUrl.implementation = function (url) {
             console.log('[net] WebView.loadUrl ' + url);
-            return this.loadUrl(url);
+            return loadUrl.call(this, url);
         };
     } catch (e) { /* not present */ }
 
@@ -105,11 +110,12 @@ Java.perform(function () {
     // ------------------------------------------------------------------
     try {
         var WebViewClient = Java.use('android.webkit.WebViewClient');
-        WebViewClient.onPageStarted.overload('android.webkit.WebView', 'java.lang.String', 'android.graphics.Bitmap')
-            .implementation = function (view, url, icon) {
-                console.log('[net] onPageStarted ' + url);
-                return this.onPageStarted(view, url, icon);
-            };
+        var onPageStarted = WebViewClient.onPageStarted.overload(
+            'android.webkit.WebView', 'java.lang.String', 'android.graphics.Bitmap');
+        onPageStarted.implementation = function (view, url, icon) {
+            console.log('[net] onPageStarted ' + url);
+            return onPageStarted.call(this, view, url, icon);
+        };
     } catch (e) { /* not present */ }
 
     console.log('[net] hooks installed');
