@@ -12,6 +12,41 @@ import subprocess
 import sys
 
 
+ANDROID_BIN_DIRS = ("/system/bin", "/system/xbin")
+BUILD_PROP_PATHS = ("/build.prop", "/system/build.prop")
+
+
+def _android_bin(name):
+    """Resolve an Android system binary.
+
+    PATH first, then the known system locations. Termux does not put
+    /system/bin on PATH, and neither does a PRoot guest unless it is
+    bound in, so calling ``getprop`` or ``pm`` by bare name silently
+    does nothing. This is what makes those checks work at all outside a
+    desktop Linux.
+    """
+    found = shutil.which(name)
+    if found:
+        return found
+    for base in ANDROID_BIN_DIRS:
+        candidate = os.path.join(base, name)
+        if os.path.exists(candidate):
+            return candidate
+    return None
+
+
+def _read_build_prop():
+    """Yield the lines of build.prop, wherever it lives."""
+    for path in BUILD_PROP_PATHS:
+        try:
+            with open(path, "r") as handle:
+                for line in handle:
+                    yield line
+            return
+        except OSError:
+            continue
+
+
 def _proc_name(pid):
     """The kernel's process name for *pid*, or "" if unreadable."""
     try:
@@ -101,31 +136,50 @@ class PostureCheck:
                 self._add("CRITICAL", "posture.root_binary", "Found {}".format(path))
                 return
         # magisk manager app?
-        try:
-            out = subprocess.run(
-                ["pm", "list", "packages", "com.topjohnwu.magisk"],
-                capture_output=True, text=True, timeout=5,
-            )
-            if "com.topjohnwu.magisk" in out.stdout:
-                self._add("CRITICAL", "posture.magisk", "Magisk manager installed")
-                return
-        except OSError:
-            pass
+        pm = _android_bin("pm")
+        if pm:
+            try:
+                out = subprocess.run(
+                    [pm, "list", "packages", "com.topjohnwu.magisk"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if "com.topjohnwu.magisk" in out.stdout:
+                    self._add("CRITICAL", "posture.magisk", "Magisk manager installed")
+                    return
+            except OSError:
+                pass
         # build tags?
-        try:
-            with open("/build.prop", "r") as handle:
-                for line in handle:
-                    if "test-keys" in line:
-                        self._add("HIGH", "posture.test_keys", "Build is a test-keys build")
-                        return
-        except OSError:
-            pass
+        #
+        # /system/build.prop is mode 0600 root:root on most devices, so an
+        # unprivileged process usually cannot read it. getprop can, and it
+        # reports the same information, so it is the fallback.
+        for line in _read_build_prop():
+            if "test-keys" in line:
+                self._add("HIGH", "posture.test_keys", "Build is a test-keys build")
+                return
+        getprop = _android_bin("getprop")
+        if getprop:
+            try:
+                out = subprocess.run(
+                    [getprop, "ro.build.tags"],
+                    capture_output=True, text=True, timeout=5,
+                )
+                if "test-keys" in out.stdout.lower():
+                    self._add("HIGH", "posture.test_keys",
+                              "Build is a test-keys build")
+                    return
+            except OSError:
+                pass
 
     def check_bootloader(self):
         """Check whether the bootloader is unlocked."""
+        getprop = _android_bin("getprop")
+        if not getprop:
+            return
         try:
             out = subprocess.run(
-                ["getprop", "ro.boot.bootloader"], capture_output=True, text=True, timeout=5
+                [getprop, "ro.boot.bootloader"],
+                capture_output=True, text=True, timeout=5,
             )
             status = out.stdout.strip().lower()
             if "unlocked" in status:
@@ -220,12 +274,12 @@ class PostureCheck:
         about the health of the underlying Android system, so under PRoot
         this is informational rather than a HIGH finding.
         """
-        if not shutil.which("pm"):
+        if not _android_bin("pm"):
             if self.emulated:
                 self._add(
                     "INFO", "posture.missing_pm",
-                    "pm is not on PATH inside the PRoot guest. Bind the "
-                    "Android system binaries to run this check properly.",
+                    "pm was not found. Bind the Android system binaries "
+                    "into the guest to run this check properly.",
                 )
             else:
                 self._add("HIGH", "posture.missing_pm",
@@ -236,12 +290,15 @@ class PostureCheck:
     # ------------------------------------------------------------------
     def check_encryption(self):
         """Check whether storage encryption is enabled."""
+        getprop = _android_bin("getprop")
+        if not getprop:
+            return
         try:
             out = subprocess.run(
-                ["getprop", "ro.crypto.state"], capture_output=True, text=True, timeout=5
+                [getprop, "ro.crypto.state"], capture_output=True, text=True, timeout=5
             )
             state = out.stdout.strip().lower()
-            if state != "encrypted":
+            if state and state != "encrypted":
                 self._add("MEDIUM", "posture.no_encryption", "Storage is not encrypted")
         except OSError:
             pass
