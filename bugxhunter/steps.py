@@ -306,6 +306,37 @@ GUIDE = {
             "is debuggable, which in practice means your own build.",
         ],
     },
+    "vpn": {
+        "summary": (
+            "The VPN layer reports where the server's outbound traffic "
+            "goes. It never claims to be tunnelled unless it can see the "
+            "route."
+        ),
+        "root": (
+            "Reading the interface list does not need root. Setting up a "
+            "tunnel does need either root or a VPN app: an app using "
+            "Android's VpnService has the OS create the interface and the "
+            "routes on its behalf, so no root is involved. Root is only "
+            "needed to wire the routing up by hand with iptables."
+        ),
+        "modes": {
+            "off": "direct connections",
+            "proxy": "outbound HTTP goes through a SOCKS5 proxy, such as Tor",
+            "tun": "a tunnel interface carries the default route",
+            "unknown": "the interface list could not be read, so the routing "
+                       "could not be confirmed",
+        },
+        "verify": [
+            "xbug vpn",
+            "curl -s -H \"X-Auth-Token: $AUTH_TOKEN\" \\",
+            "  http://SERVER_HOST:7080/vpn",
+        ],
+        "note": (
+            "The status reports interfaces_readable. When that is false, "
+            "an empty interface list means the server could not look, not "
+            "that there is no tunnel."
+        ),
+    },
     "privileges": {
         "summary": (
             "The server uses the best local elevation it can find. The "

@@ -274,6 +274,10 @@ xbug vpn --mode tun      # request a mode
 
 `GET /vpn` returns `requested`, `applied` and a `note`. If you ask for `tun` and the route is not tunnelled, the note says so — a tunnel interface that is up but unused does not count as `tun`.
 
+**On the root question:** *reading* the interface list does not need root. *Setting up* a tunnel needs either root or a VPN app — an app using Android's `VpnService` has the OS create the interface and the routes on its behalf, so no root is involved. Root is only needed to wire the routing up by hand with iptables.
+
+**"No interfaces" is not the same as "no tunnel".** The status reports `interfaces_readable`. When that is false, the server could not read the interface list at all — `ip` returns "Cannot bind netlink socket: Permission denied" on some Android configurations — and the mode is reported as `unknown` rather than `off`. A `/proc/net/dev` fallback covers the case where netlink is blocked but proc is readable.
+
 ## Termux device state
 
 On a Termux host the server can read the device's own sensors through the Termux:API add-on:

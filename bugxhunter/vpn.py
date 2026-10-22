@@ -41,11 +41,67 @@ def _run(args: List[str], timeout: int = 10) -> Optional[str]:
         return None
 
 
+def _run_code(args: List[str], timeout: int = 10):
+    """Run a command and return (returncode, stdout, stderr).
+
+    The return code is None when the command could not be run at all.
+    """
+    try:
+        p = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        return p.returncode, p.stdout, p.stderr
+    except FileNotFoundError:
+        return None, "", ""
+    except Exception:
+        return None, "", ""
+
+
+def _ip(args: List[str]) -> tuple:
+    """Run an ip subcommand. Returns (output, error).
+
+    The error is None when the command ran and succeeded, and a
+    description when it could not be run or failed. Distinguishing the
+    two matters: "there is no tunnel" and "I could not look" are
+    different answers, and reporting the second as the first is how a
+    server ends up claiming it is in the clear when it is not.
+    """
+    if shutil.which("ip") is None:
+        return None, "the ip command is not installed (pkg install iproute2)"
+    code, out, err = _run_code(["ip"] + args)
+    if code is None:
+        return None, "the ip command could not be run"
+    if code != 0:
+        detail = (err or out).strip().splitlines()
+        return None, (detail[0][:200] if detail else "ip exited {}".format(code))
+    return out, None
+
+
+def _interfaces_from_proc() -> List[str]:
+    """Interface names from /proc/net/dev.
+
+    A fallback for when netlink is denied, which Android does to the
+    app uid in some configurations. The file is world-readable on a
+    normal install.
+    """
+    names = []
+    try:
+        with open("/proc/net/dev", "r") as handle:
+            for line in handle:
+                if ":" not in line:
+                    continue
+                name = line.split(":", 1)[0].strip()
+                if name:
+                    names.append(name)
+    except OSError:
+        return []
+    return names
+
+
 def tunnel_interfaces() -> List[str]:
     """List active tunnel interfaces (tun0, wg0, mullvad, tailscale, ...)."""
-    out = _run(["ip", "-o", "link", "show"])
-    if not out:
-        out = _run(["ip", "link", "show"])
+    out, _err = _ip(["-o", "link", "show"])
+    if out is None:
+        # netlink is not available. Fall back to the proc table.
+        out = "\n".join(_interfaces_from_proc())
     if not out:
         return []
     ifaces = []
@@ -53,16 +109,26 @@ def tunnel_interfaces() -> List[str]:
         line = line.strip()
         if not line or ":" not in line:
             continue
-        # "2: tun0: <POINTOPOINT,UP> ..." or with -o "2: tun0: ..."
+        # "2: tun0: <POINTOPOINT,UP> ..." or "tun0:" from proc
         parts = line.split(":")
         if len(parts) < 2:
             continue
-        name = parts[1].strip()
+        name = parts[1].strip() if parts[0].strip().isdigit() else parts[0].strip()
         if not name:
             continue
         if any(marker in name.lower() for marker in TUNNEL_MARKERS):
             ifaces.append(name)
     return ifaces
+
+
+def interfaces_error() -> Optional[str]:
+    """Why the interface list could not be read, or None if it could."""
+    out, err = _ip(["-o", "link", "show"])
+    if out is not None:
+        return None
+    if _interfaces_from_proc():
+        return None
+    return err or "the interface list could not be read"
 
 
 def mullvad_active() -> bool:
@@ -97,13 +163,21 @@ def active_mode() -> str:
     A tunnel interface only counts as "tun" if the default route
     actually goes through it. An interface that is up but unused is
     reported as "off" rather than pretending the traffic is protected.
+
+    When the interface list cannot be read at all, the answer is
+    "unknown" rather than "off", because those are very different
+    states and the caller has to be able to tell them apart.
     """
-    if mullvad_active() or openvpn_active() or default_route_through_tunnel():
+    if mullvad_active() or openvpn_active():
+        return "tun"
+    if default_route_through_tunnel():
         return "tun"
     if tor_active():
         return "proxy"
     if os.environ.get("ALL_PROXY") or os.environ.get("all_proxy"):
         return "proxy"
+    if interfaces_error() is not None:
+        return "unknown"
     return "off"
 
 
@@ -117,7 +191,7 @@ def proxy_url() -> Optional[str]:
 
 def tunnel_ips() -> List[str]:
     """IP addresses assigned to tunnel interfaces."""
-    out = _run(["ip", "addr", "show"])
+    out, _err = _ip(["addr", "show"])
     if not out:
         return []
     ips = []
@@ -132,6 +206,12 @@ def tunnel_ips() -> List[str]:
 
 
 def status() -> Dict[str, Any]:
+    """The live VPN state.
+
+    Reports whether the interface list could actually be read, because
+    an empty list means two very different things depending on that.
+    """
+    err = interfaces_error()
     return {
         "mode": active_mode(),
         "proxy_url": proxy_url(),
@@ -139,6 +219,8 @@ def status() -> Dict[str, Any]:
         "tunnel_ips": tunnel_ips(),
         "mullvad": mullvad_active(),
         "tor": tor_active(),
+        "interfaces_readable": err is None,
+        "note": err or "",
     }
 
 
@@ -147,7 +229,7 @@ def default_route_through_tunnel() -> bool:
 
     This is a check, not an action. The name says what it does.
     """
-    out = _run(["ip", "route", "show", "default"])
+    out, _err = _ip(["route", "show", "default"])
     if not out:
         return False
     return any(marker in out for marker in ("tun", "wg", "mullvad", "tailscale"))
@@ -219,6 +301,7 @@ def apply(mode: str = "auto") -> Dict[str, Any]:
                 "tunnel_ips": tunnel_ips(),
                 "note": "the default route already goes through a tunnel",
             }
+        err = interfaces_error()
         return {
             "requested": "tun",
             "applied": active_mode(),
@@ -226,6 +309,8 @@ def apply(mode: str = "auto") -> Dict[str, Any]:
             "env": {},
             "tunnel_interfaces": tunnel_interfaces(),
             "note": (
+                "the interface list could not be read, so the route cannot "
+                "be confirmed: " + err if err else
                 "no tunnel interface carries the default route. Bring up "
                 "the VPN app first; this process cannot redirect traffic "
                 "without root."
@@ -243,6 +328,19 @@ def apply(mode: str = "auto") -> Dict[str, Any]:
             "env": {},
             "tunnel_interfaces": tunnel_interfaces(),
             "note": "proxy mode was requested but no proxy is reachable",
+        }
+    if applied == "unknown":
+        err = interfaces_error()
+        return {
+            "requested": mode,
+            "applied": "unknown",
+            "proxy_url": proxy_url(),
+            "env": env,
+            "tunnel_interfaces": tunnel_interfaces(),
+            "note": (
+                "the interface list could not be read, so the routing could "
+                "not be confirmed: " + (err or "")
+            ),
         }
     return {
         "requested": mode,
