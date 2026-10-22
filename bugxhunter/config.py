@@ -61,6 +61,14 @@ class Config:
     # calls the gadget "Gadget" unless the config gives it a name.
     gadget_target: str = "Gadget"
 
+    # ---- local elevation ----
+    # Paths to the elevation binaries, so an operator can point at a
+    # specific one rather than relying on whatever PATH happens to
+    # contain. A "su" that is really a wrapper around rish is fine:
+    # the tier is decided by the uid it actually reports.
+    su_path: str = ""
+    rish_path: str = ""
+
     # ---- scanners ----
     scanner_threads: int = 4
     scanner_timeout_ms: int = 8000
@@ -106,6 +114,8 @@ def load(path: str = None) -> Config:
         "host", "port", "log_level", "version",
         "termux_api_path",
         "vpn_mode", "vpn_tunnel_if",
+        "su_path",
+        "rish_path",
         "frida_port",
         "frida_host",
         "frida_mode",

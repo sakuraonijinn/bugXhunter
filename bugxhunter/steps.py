@@ -349,6 +349,7 @@ GUIDE = {
                 "via": "su",
                 "gives": "uid 0. Full control of the device.",
                 "enables": "package enumeration, dumpsys, Frida, everything",
+                "can_ptrace_other_apps": True,
             },
             {
                 "level": "shizuku",
@@ -362,6 +363,7 @@ GUIDE = {
                     "ptrace of another app's process, so Frida still needs "
                     "root on the target"
                 ),
+                "can_ptrace_other_apps": False,
             },
             {
                 "level": "plain",
@@ -371,8 +373,19 @@ GUIDE = {
                     "the local posture checks that need no privilege, and "
                     "every network scanner"
                 ),
+                "can_ptrace_other_apps": False,
             },
         ],
+        "shim": (
+            "A su in the project directory that is really a wrapper around "
+            "rish is fine, and is reported as the shell tier rather than "
+            "root, because the tier is decided by the uid the binary "
+            "actually reaches and not by its name. What it does not do is "
+            "help with Frida: the blocker there is the ptrace scope "
+            "policy, which denies uid 2000 just as firmly as it denies "
+            "any other uid. If Shizuku itself was started with root, then "
+            "rish reaches uid 0 and Frida works; check with rish -c id -u."
+        ),
         "shizuku_setup": [
             "termux-setup-storage",
             "# Shizuku app: 'Use Shizuku in terminal apps' -> Export files",

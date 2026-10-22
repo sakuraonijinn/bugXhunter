@@ -126,6 +126,36 @@ flag Magisk/Frida/VPN apps, list debuggable apps and read the device
 administrator and lock-screen state — none of which an app-level check
 can see.
 
+`xbug privileges` reports the tier, the evidence behind it, and what to
+do next:
+
+```json
+{
+  "tier": "shizuku",
+  "evidence": "/data/data/com.termux/files/usr/bin/rish gives uid 2000",
+  "can_ptrace_other_apps": false
+}
+```
+
+**The tier is decided by the uid a binary actually reaches, not by its
+name.** A `su` in the project directory that is really a wrapper around
+`rish` is therefore reported as the shell tier, not as root — which is
+the honest answer, and the one that matters.
+
+**It still does not help with Frida.** The blocker there is the `ptrace`
+scope policy: since Android 9 a process may only `ptrace` a descendant
+or a same-UID peer, so uid 2000 is refused just as firmly as any other
+uid. The only way Shizuku changes that is if the Shizuku service itself
+is running as root — check with `rish -c id -u`:
+
+| `rish -c id -u` | Meaning | Frida |
+|---|---|---|
+| `2000` | Shizuku on a user build | still blocked — use Frida Gadget |
+| `0` | Shizuku started with root | `frida-server` works |
+
+`su_path` and `rish_path` in `config.json` let you point at a specific
+binary instead of relying on `PATH`.
+
 **This is orthogonal to the network plane.** A VPN or WireGuard link
 carries the traffic; Shizuku only decides how much the server can see
 about its own device. Use both, for different jobs.

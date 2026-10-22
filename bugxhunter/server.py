@@ -48,7 +48,10 @@ class Server:
         self.config = config
         self.frida = FridaClient(host=config.frida_host, port=config.frida_port)
         self.tools = ToolBridge()
-        self.priv = Privileges()
+        self.priv = Privileges(
+            su_cmd=config.su_path or None,
+            rish_cmd=config.rish_path or None,
+        )
         self.hooks = HookLibrary()
         # Script results, keyed by id, newest last. Bounded so a long
         # running server cannot grow without limit.
@@ -143,6 +146,7 @@ class Server:
             "termux": termux_available(),
             "emulated": under_proot(),
             "privileges": self.priv.detect(),
+            "privilege_detail": self.priv.report(),
             "frida_mode": self.config.frida_mode,
         }
 

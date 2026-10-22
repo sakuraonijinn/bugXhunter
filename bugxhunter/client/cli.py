@@ -148,6 +148,12 @@ def cmd_gadget(args, client):
         return
 
 
+def cmd_privileges(args, client):
+    """Report the local elevation tier, the evidence, and what to do next."""
+    from ..privileges import Privileges
+    _print(Privileges().report())
+
+
 def cmd_vpn(args, client):
     """Report or change the outbound traffic routing."""
     import json as _json
@@ -287,7 +293,8 @@ def cmd_drop(args, client):
 
 
 def cmd_tools(args, client):
-    """List the reachable Kali tools."""
+    """List the reachable Kali tools and the local elevation binaries."""
+    from ..tools import ToolBridge
     bridge = ToolBridge()
     report = bridge.available()
     _print({
@@ -295,6 +302,7 @@ def cmd_tools(args, client):
         "nethunter": bridge._nethunter_path() is not None,
         "available": [n for n, m in report.items() if m["available"]],
         "tools": report,
+        "elevation": bridge.elevation(),
     })
 
 
@@ -374,6 +382,8 @@ def build_parser():
     gf.add_argument("--port", type=int, default=27042)
     gf.add_argument("--device", help="adb device serial")
 
+    priv = sub.add_parser("privileges",
+                          help="report the local elevation tier")
     vpn = sub.add_parser("vpn", help="report or change the traffic routing")
     vpn.add_argument("--mode", choices=("auto", "off", "proxy", "tun"),
                      help="routing mode to apply")
@@ -416,6 +426,7 @@ HANDLERS = {
     "vpn": cmd_vpn,
     "termux": cmd_termux,
     "gadget": cmd_gadget,
+    "privileges": cmd_privileges,
 }
 
 

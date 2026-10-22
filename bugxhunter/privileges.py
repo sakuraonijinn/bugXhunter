@@ -70,22 +70,38 @@ class Privileges:
         self.rish_cmd = rish_cmd or shutil.which("rish")
         self.level = PLAIN
         self._detected = False
+        self.evidence = ""
 
     # ------------------------------------------------------------------
     # Detection
     # ------------------------------------------------------------------
     def detect(self) -> str:
-        """Work out the best tier available. Cached after the first call."""
+        """Work out the best tier available. Cached after the first call.
+
+        The tier is decided by the uid that is actually reached, not by
+        which binary was found. A "su" that is really a wrapper around
+        rish reports uid 2000, so it is the shell tier and not root.
+        That distinction matters: root can ptrace another app's
+        process, shell cannot, and pretending otherwise would send an
+        operator down the frida-server path with no way to make it work.
+        """
         if self._detected:
             return self.level
 
         # Root first: it is strictly more capable than shell.
         if self.su_cmd:
             probe = self._run_su("id -u")
-            if probe.get("ok") and probe.get("stdout", "").strip() == "0":
+            uid = probe.get("stdout", "").strip()
+            if probe.get("ok") and uid == "0":
                 self.level = ROOT
+                self.evidence = "{} gives uid 0".format(self.su_cmd)
                 self._detected = True
                 return self.level
+            if probe.get("ok") and uid:
+                # A su that is not root. It is a wrapper of some kind,
+                # most likely around rish.
+                self.evidence = ("{} gives uid {}, not root".format(
+                    self.su_cmd, uid))
 
         # Shizuku via rish.
         if self.rish_cmd:
@@ -93,12 +109,45 @@ class Privileges:
             uid = probe.get("stdout", "").strip()
             if probe.get("ok") and uid.isdigit() and int(uid) >= 2000:
                 self.level = SHIZUKU
+                self.evidence = "{} gives uid {}".format(self.rish_cmd, uid)
                 self._detected = True
                 return self.level
 
+        if not self.evidence:
+            self.evidence = "no su and no rish on PATH"
         self.level = PLAIN
         self._detected = True
         return self.level
+
+    def report(self) -> Dict[str, Any]:
+        """The tier, the evidence behind it, and what to do next."""
+        tier = self.detect()
+        next_step = {
+            ROOT: (
+                "Already root. frida-server can be started on the target "
+                "and it can attach to other apps."
+            ),
+            SHIZUKU: (
+                "Shell privileges. Enough for package enumeration, dumpsys "
+                "and settings, and enough to start a frida-server on a "
+                "target that is already root. Not enough to ptrace another "
+                "app, so for a non-root target use Frida Gadget instead."
+            ),
+            PLAIN: (
+                "No elevation. The posture checks that need no privilege "
+                "still work. For Shizuku, install it and export the rish "
+                "files into the Termux prefix; for root, install a su."
+            ),
+        }[tier]
+
+        return {
+            "tier": tier,
+            "evidence": self.evidence,
+            "su": self.su_cmd or "",
+            "rish": self.rish_cmd or "",
+            "next_step": next_step,
+            "can_ptrace_other_apps": tier == ROOT,
+        }
 
     def is_root(self) -> bool:
         return self.detect() == ROOT

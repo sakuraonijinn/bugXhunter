@@ -95,6 +95,27 @@ def _kali_root() -> Optional[str]:
     return None
 
 
+def local_elevation_tools() -> Dict[str, dict]:
+    """Report the local elevation binaries.
+
+    A "su" that is really a wrapper around rish is legitimate and is
+    reported as such, because what matters is the uid it reaches and
+    not the name of the file.
+    """
+    report = {}
+    for name, purpose in (
+            ("su", "root, if the device has it"),
+            ("rish", "Shizuku shell, uid 2000"),
+            ("id", "used to work out which uid a binary reaches")):
+        path = shutil.which(name)
+        report[name] = {
+            "present": path is not None,
+            "purpose": purpose,
+            "path": path or "",
+        }
+    return report
+
+
 class ToolBridge:
     """Find and run Kali tools, natively or through ``nethunter``."""
 
@@ -158,6 +179,10 @@ class ToolBridge:
                 "improves": meta.get("improves", ""),
             }
         return report
+
+    def elevation(self) -> Dict[str, dict]:
+        """Report the local elevation binaries."""
+        return local_elevation_tools()
 
     def has(self, tool: str) -> bool:
         return self.resolve(tool) is not None
