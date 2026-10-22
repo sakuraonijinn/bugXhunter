@@ -98,6 +98,56 @@ def cmd_frida(args, client):
         _print(client.frida_execute(args.target, args.script))
 
 
+def cmd_gadget(args, client):
+    """Rootless instrumentation: patch an APK to carry Frida Gadget."""
+    from .gadget import GadgetError, GadgetTool
+    tool = GadgetTool()
+
+    if args.gadget_action == "check":
+        report = tool.check_tools()
+        _print({
+            "tools": report,
+            "missing_required": tool.missing_required(),
+            "note": ("apktool is required. apksigner gives a v2/v3 "
+                     "signature; jarsigner gives a v1 signature, which some "
+                     "devices will not accept."),
+        })
+        return
+
+    if args.gadget_action == "config":
+        _print(tool.gadget_config(port=args.port, address=args.address))
+        return
+
+    if args.gadget_action == "build":
+        try:
+            result = tool.instrument(
+                args.apk, abi=args.abi, version=args.version,
+                port=args.port, address=args.address, aapt=args.aapt)
+        except GadgetError as exc:
+            _print({"ok": False, "error": str(exc)})
+            raise SystemExit(1)
+        _print(result)
+        return
+
+    if args.gadget_action == "install":
+        try:
+            _print(tool.install(args.apk, device=args.device))
+            if args.forward:
+                _print(tool.forward(port=args.port, device=args.device))
+        except GadgetError as exc:
+            _print({"ok": False, "error": str(exc)})
+            raise SystemExit(1)
+        return
+
+    if args.gadget_action == "forward":
+        try:
+            _print(tool.forward(port=args.port, device=args.device))
+        except GadgetError as exc:
+            _print({"ok": False, "error": str(exc)})
+            raise SystemExit(1)
+        return
+
+
 def cmd_vpn(args, client):
     """Report or change the outbound traffic routing."""
     import json as _json
@@ -299,6 +349,31 @@ def build_parser():
     drop.add_argument("--key", help="SSH private key path")
     drop.add_argument("--dest", help="destination directory (default: ~/xbug)")
 
+    gadget = sub.add_parser("gadget", help="rootless APK instrumentation")
+    gadget_sub = gadget.add_subparsers(dest="gadget_action", required=True)
+    gadget_sub.add_parser("check", help="report the host tools that are present")
+    gc = gadget_sub.add_parser("config", help="print the gadget config")
+    gc.add_argument("--port", type=int, default=27042)
+    gc.add_argument("--address", default="127.0.0.1")
+    gb = gadget_sub.add_parser("build", help="rebuild the APK with the gadget")
+    gb.add_argument("apk", help="path to the APK to instrument")
+    gb.add_argument("--abi", default="arm64",
+                    choices=("arm64", "arm", "x86_64", "x86"))
+    gb.add_argument("--version", default="17.24.3",
+                    help="the Frida version the gadget must match")
+    gb.add_argument("--port", type=int, default=27042)
+    gb.add_argument("--address", default="127.0.0.1")
+    gb.add_argument("--aapt", help="path to an aapt2 for this architecture")
+    gi = gadget_sub.add_parser("install", help="install the instrumented APK")
+    gi.add_argument("apk", help="path to the signed APK")
+    gi.add_argument("--device", help="adb device serial")
+    gi.add_argument("--port", type=int, default=27042)
+    gi.add_argument("--forward", action="store_true",
+                    help="also forward the gadget port over adb")
+    gf = gadget_sub.add_parser("forward", help="forward the gadget port")
+    gf.add_argument("--port", type=int, default=27042)
+    gf.add_argument("--device", help="adb device serial")
+
     vpn = sub.add_parser("vpn", help="report or change the traffic routing")
     vpn.add_argument("--mode", choices=("auto", "off", "proxy", "tun"),
                      help="routing mode to apply")
@@ -340,6 +415,7 @@ HANDLERS = {
     "drop": cmd_drop,
     "vpn": cmd_vpn,
     "termux": cmd_termux,
+    "gadget": cmd_gadget,
 }
 
 

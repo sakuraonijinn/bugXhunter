@@ -53,6 +53,13 @@ class Config:
     # A PRoot VM cannot host a frida-server (it already holds the
     # ptrace slot), so it points at the real target instead.
     frida_host: str = "127.0.0.1"
+    # "server" means a frida-server is being controlled.
+    # "gadget" means the target loads Frida Gadget from inside its own
+    # process, which needs no root. The process name is then "Gadget".
+    frida_mode: str = "server"
+    # The process name the target appears under in gadget mode. Frida
+    # calls the gadget "Gadget" unless the config gives it a name.
+    gadget_target: str = "Gadget"
 
     # ---- scanners ----
     scanner_threads: int = 4
@@ -101,6 +108,8 @@ def load(path: str = None) -> Config:
         "vpn_mode", "vpn_tunnel_if",
         "frida_port",
         "frida_host",
+        "frida_mode",
+        "gadget_target",
         "scanner_user_agent",
         "log_file",
     ):

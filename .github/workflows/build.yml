@@ -120,9 +120,150 @@ jobs:
           AUTH_TOKEN: change-me-12345
         run: |
           set -euo pipefail
-          if python3 -m uvicorn bugxhunter.server:app --host 127.0.0.1 --port 7081 \
+          # The command line entry point refuses to start.
+          if python3 -m bugxhunter.server --host 127.0.0.1 --port 7081 \
               > /dev/null 2>&1; then
             echo "FAIL: the server started with a placeholder token"
             exit 1
           fi
           echo "  ok   refuses to start with a placeholder token"
+
+          # The ASGI entry point starts, but serves nothing and says why.
+          python3 -m uvicorn bugxhunter.server:app --host 127.0.0.1 --port 7081 &
+          SERVER_PID=$!
+          trap 'kill $SERVER_PID 2>/dev/null || true' EXIT
+          for i in $(seq 1 20); do
+            curl -s -o /dev/null http://127.0.0.1:7081/health && break
+            sleep 1
+          done
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7081/health)
+          if [ "$code" != "503" ]; then
+            echo "FAIL: expected 503, got $code"
+            exit 1
+          fi
+          echo "  ok   serves 503 and explains why"
+
+  # The rootless instrumentation pipeline. It needs a real APK and the
+  # Android build tools, so it gets its own job with the SDK set up.
+  gadget:
+    name: rootless gadget pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: install the host tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            openjdk-17-jre-headless aapt apksigner zipalign
+          # apktool needs a Java runtime, and its own aapt2 is x86_64,
+          # which is fine on this runner.
+          curl -sSL -o /tmp/apktool.jar \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar
+          printf '#!/bin/sh\nexec java -jar /tmp/apktool.jar "$@"\n' > /usr/local/bin/apktool
+          chmod +x /usr/local/bin/apktool
+          apktool --version
+
+      - name: build a minimal APK to instrument
+        run: |
+          set -euo pipefail
+          mkdir -p src/res/values src/com/example/gadgettest
+          cat > src/AndroidManifest.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.example.gadgettest">
+              <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="34" />
+              <application android:label="GadgetTest">
+                  <activity android:name="com.example.gadgettest.Main" android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          XML
+          cat > src/res/values/strings.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <resources><string name="app_name">GadgetTest</string></resources>
+          XML
+          cat > src/com/example/gadgettest/Main.java <<'JAVA'
+          package com.example.gadgettest;
+          public class Main extends android.app.Activity {
+              protected void onCreate(android.os.Bundle b) { super.onCreate(b); }
+          }
+          JAVA
+
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          [ -x "$SDKMANAGER" ] || SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -name sdkmanager -type f | sort | tail -1)"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+          BT="$ANDROID_HOME/build-tools/34.0.0"
+          AJ="$ANDROID_HOME/platforms/android-34/android.jar"
+          mkdir -p classes out
+
+          javac -nowarn -source 8 -target 8 -bootclasspath "$AJ" -d classes \
+            src/com/example/gadgettest/Main.java 2>/dev/null
+          "$BT/d8" --min-api 24 --output out classes/com/example/gadgettest/Main.class
+          "$BT/aapt2" compile --dir src/res -o resources.zip
+          "$BT/aapt2" link -o base.apk -I "$AJ" --manifest src/AndroidManifest.xml \
+            --min-sdk-version 24 --target-sdk-version 34 resources.zip
+          python3 - <<'PY'
+          import zipfile
+          z = zipfile.ZipFile('base.apk', 'a')
+          z.write('out/classes.dex', 'classes.dex')
+          z.close()
+          PY
+          "$BT/zipalign" -f 4 base.apk testapp.apk
+          echo "built testapp.apk"
+
+      - name: run the gadget pipeline
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json, os, subprocess, sys, zipfile
+          sys.path.insert(0, '.')
+          from bugxhunter.client.gadget import GadgetTool, GadgetError
+
+          tool = GadgetTool(workdir='gadgetwork')
+          report = tool.check_tools()
+          for name, meta in report.items():
+              print("  %-11s %s" % (name, "present" if meta["present"] else "MISSING"))
+          missing = tool.missing_required()
+          if missing:
+              raise SystemExit("missing required tools: " + ", ".join(missing))
+
+          result = tool.instrument('testapp.apk', abi='arm64',
+                                   version='17.24.3', port=27042)
+          print("  steps:", " -> ".join(result["steps"]))
+
+          with zipfile.ZipFile(result["apk"]) as z:
+              names = z.namelist()
+              gadget = [n for n in names if n.endswith("libfrida-gadget.so")]
+              config = [n for n in names if n.endswith("libfrida-gadget.config.json")]
+              print("  gadget in the apk:", gadget)
+              print("  config in the apk:", config)
+              if not gadget:
+                  raise SystemExit("the gadget was not packaged")
+              if not config:
+                  raise SystemExit("the gadget config was not packaged")
+              manifest = z.read("AndroidManifest.xml")
+              if b"frida_gadget_config" not in manifest:
+                  raise SystemExit("the manifest does not point at the config")
+              print("  the manifest points at the config")
+
+          verify = subprocess.run(
+              ["apksigner", "verify", "--verbose", result["apk"]],
+              capture_output=True, text=True)
+          print("  signature:", "v2" if "v2 scheme" in verify.stdout else "none")
+          if verify.returncode != 0:
+              raise SystemExit("the signature does not verify: " + verify.stderr[:300])
+          print("  ok   the instrumented APK is signed and valid")
+          PY

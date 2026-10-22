@@ -238,6 +238,74 @@ GUIDE = {
             "verify": "curl /frida/status  ->  running:false",
         },
     ],
+    "gadget": {
+        "summary": (
+            "frida-server needs root, because it injects by ptracing a "
+            "process it does not own and Android has restricted ptrace "
+            "to a process's own descendants since Android 9. There is no "
+            "way around that. Frida Gadget is the rootless equivalent: it "
+            "loads inside the target's own process, so it needs no "
+            "privilege the app does not already have."
+        ),
+        "cost": (
+            "The APK is re-signed, so its signature changes. An app that "
+            "checks its own signature, or that talks to a backend that "
+            "pins the signature, will notice. That is a property of the "
+            "technique rather than a fault in the tooling."
+        ),
+        "steps": [
+            {
+                "name": "Check the host tools",
+                "command": "xbug gadget check",
+                "expect": "apktool present; apksigner, adb and zipalign reported.",
+            },
+            {
+                "name": "Rebuild the APK with the gadget",
+                "command": (
+                    "xbug gadget build app.apk --abi arm64 "
+                    "--version 17.24.3 --port 27042"
+                ),
+                "expect": (
+                    "The gadget is downloaded, decompressed and linked in, "
+                    "the manifest points at its config, and the APK is "
+                    "rebuilt and signed."
+                ),
+            },
+            {
+                "name": "Install and reach it",
+                "command": (
+                    "xbug gadget install gadget-signed.apk --forward"
+                ),
+                "expect": "The app is installed and the port is forwarded.",
+            },
+            {
+                "name": "Point the server at the gadget",
+                "command": (
+                    "python3 -m bugxhunter.server --frida-host 127.0.0.1 "
+                    "--vpn-mode off"
+                ),
+                "expect": (
+                    "The server drives the gadget over the forwarded port. "
+                    "The target appears as the process named Gadget."
+                ),
+            },
+            {
+                "name": "Run the hook library",
+                "command": (
+                    "xbug hooks run ssl_pinning_bypass --target Gadget"
+                ),
+                "expect": "The hook installs in the app's own process.",
+            },
+        ],
+        "notes": [
+            "The gadget version must match the frida CLI on the server, "
+            "or the protocol will not line up.",
+            "Over a network rather than adb, set the gadget's address to "
+            "the device's address and forward the port from the operator.",
+            "run-as is a simpler rootless path, but only for an app that "
+            "is debuggable, which in practice means your own build.",
+        ],
+    },
     "privileges": {
         "summary": (
             "The server uses the best local elevation it can find. The "

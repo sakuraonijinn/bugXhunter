@@ -285,6 +285,41 @@ xbug termux --limit 50
 
 `GET /termux` returns location, battery, wifi, the clipboard and the SMS inbox. Without the add-on installed it says `available: false` rather than returning empty fields that look like real readings.
 
+## Rootless instrumentation (Frida Gadget)
+
+**`frida-server` cannot run without root.** It injects by ptracing a process it does not own, and Android has restricted `ptrace` to a process's own descendants since Android 9. There is no way around that requirement, and anyone claiming otherwise is shipping something that does not work.
+
+**Frida Gadget is the rootless equivalent.** It is a shared library that loads *inside* the target's own process, so it needs no privilege the app does not already have.
+
+```bash
+xbug gadget check                              # what is installed on this host
+xbug gadget build app.apk --abi arm64 --version 17.24.3
+xbug gadget install gadget-signed.apk --forward
+```
+
+The pipeline is real: `apktool` decodes the APK, the gadget is downloaded and decompressed into `lib/<abi>/`, the manifest is patched to point at the gadget's config, `apktool` rebuilds, `zipalign` aligns, and the result is signed — v2/v3 with `apksigner`, or v1 with `jarsigner` as a fallback, with a warning that v1 may be refused.
+
+**On an arm host, pass your own `aapt2`:** `--aapt /path/to/aapt2`. apktool ships an x86_64 `aapt2`, which cannot run on a phone or an arm workstation, and the rebuild fails with a bare "No such file or directory". The CI job for this pipeline runs on x86_64, where apktool's own binary works.
+
+**The cost is the signature.** The APK is re-signed, so an app that checks its own signature, or that talks to a backend pinning the signature, will notice. That is a property of the technique, not a fault in the tooling. It suits testing builds you control.
+
+The server then drives the gadget over the forwarded port, and the target appears as the process named `Gadget`:
+
+```bash
+python3 -m bugxhunter.server --frida-host 127.0.0.1
+xbug hooks run ssl_pinning_bypass --target Gadget
+```
+
+**Other rootless paths, and their limits:**
+
+| Path | Needs | Limit |
+|------|-------|-------|
+| Frida Gadget | `apktool`, re-signing | the signature changes |
+| `run-as <pkg>` | the app is debuggable | only your own debuggable builds |
+| An emulator | an emulator with root | not the real device, so no real hardware attestation |
+
+Shizuku does not help here: shell privileges cannot `ptrace` another app's process.
+
 ## Operator CLI
 
 ```bash

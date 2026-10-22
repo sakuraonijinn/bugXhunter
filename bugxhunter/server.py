@@ -143,6 +143,7 @@ class Server:
             "termux": termux_available(),
             "emulated": under_proot(),
             "privileges": self.priv.detect(),
+            "frida_mode": self.config.frida_mode,
         }
 
     def _diagnose(self, handler, body):
@@ -168,10 +169,18 @@ class Server:
 
         The device comes from the ?device= query parameter, which the
         Android app sends. It is ignored when absent.
+
+        In gadget mode the target loads Frida Gadget inside its own
+        process, so the process list shows the app under the name
+        "Gadget" rather than its package name.
         """
         if not device:
             device = self._query_param(handler, "device") or "local"
-        return {"processes": self.frida.list_processes(device), "device": device}
+        result = {"processes": self.frida.list_processes(device), "device": device}
+        if self.config.frida_mode == "gadget":
+            result["mode"] = "gadget"
+            result["target_name"] = self.config.gadget_target
+        return result
 
     def _frida_script(self, handler, body):
         """Run a script against a process and keep the result.
@@ -415,14 +424,26 @@ def make_app(config: Config):
     server = make_server(config)
 
     # A placeholder token is a well-known credential. Refusing to serve is
-    # better than serving an API that anyone can read. The check lives
-    # here so it covers both entry points: the module-level app used by
-    # uvicorn, and the app main() builds.
+    # better than serving an API that anyone can read.
+    #
+    # This is not raised here, because the module is imported by tooling
+    # and by the ASGI app factory. The app answers every request with 503
+    # and says why, so an operator who started it by mistake finds out
+    # immediately. The command line entry point refuses to start at all.
     if config.auth_token in PLACEHOLDER_TOKENS:
-        raise SystemExit(
-            "refusing to start: the auth token is a placeholder.\n"
-            "set a real token with AUTH_TOKEN, --token, or the "
-            '"token" key in config.json')
+        async def _refuse(request):
+            return JSONResponse({
+                "error": "the auth token is a placeholder; refusing to serve",
+                "fix": ("set a real token with AUTH_TOKEN, --token, or the "
+                        '"token" key in config.json'),
+            }, status_code=503)
+
+        refusing = Starlette(routes=[
+            Route("/{path:path}", _refuse, methods=["GET", "POST"]),
+        ])
+        refusing.add_middleware(CORSMiddleware, allow_origins=["*"],
+                                allow_methods=["*"], allow_headers=["*"])
+        return refusing
 
     async def _health_route(request):
         return _json_route(server._health, None, b"")
@@ -595,6 +616,14 @@ def main():
         config.vpn_enabled = True
         if config.vpn_mode == "off":
             config.vpn_mode = "auto"
+
+    # A placeholder token is a well-known credential. The command line
+    # entry point refuses to start rather than serving one.
+    if config.auth_token in PLACEHOLDER_TOKENS:
+        print("refusing to start: the auth token is a placeholder.")
+        print("set a real token with AUTH_TOKEN, --token, or the "
+              '"token" key in config.json')
+        raise SystemExit(2)
 
     server = make_server(config)
 
