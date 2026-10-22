@@ -15,6 +15,7 @@ Usage:
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 
 
@@ -85,20 +86,42 @@ class ReverseSSH:
         SSH process is spawned with one ``-R`` per pair, which matters
         because every extra SSH process is another thing to leak if the
         client dies without closing it.
+
+        Returns (ok, reason). A process that is merely alive is not
+        enough: ssh exits quickly on a rejected key or a remote port it
+        cannot bind, and reporting that as a working tunnel sends the
+        operator down a path that cannot succeed.
         """
         if not forwards:
-            return False
+            return False, "no forwards requested"
 
         args = self._build_base_args()
         for remote_port, local_port in forwards:
             args.insert(-1, "-R {}:localhost:{}".format(remote_port, local_port))
 
-        self._proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
-                                       stderr=subprocess.DEVNULL)
-        self._tunnels.extend(forwards)
+        # Capture stderr so a failure can say why. A file is used rather
+        # than a pipe because a pipe fills up and blocks.
+        log_path = os.path.join(
+            tempfile.gettempdir(), "xbug-ssh-{}.log".format(os.getpid()))
+        self._log_path = log_path
+        log = open(log_path, "w+")
+        self._log_handle = log
+        self._proc = subprocess.Popen(
+            args, stdout=subprocess.DEVNULL, stderr=log)
 
-        time.sleep(1)
-        return self._proc.poll() is None
+        # Give the tunnel a moment to establish, then check it is still
+        # running. A rejected key or a port it cannot bind makes ssh
+        # exit straight away.
+        time.sleep(1.5)
+        if self._proc.poll() is not None:
+            log.seek(0)
+            detail = log.read().strip().splitlines()
+            reason = detail[-1][:200] if detail else "ssh exited immediately"
+            self.close()
+            return False, reason
+
+        self._tunnels.extend(forwards)
+        return True, ""
 
     def run_command(self, command, timeout=15):
         """Run a command on the target over SSH and return its output.
@@ -166,6 +189,20 @@ class ReverseSSH:
                 self._proc.kill()
         self._proc = None
         self._tunnels = []
+        handle = getattr(self, "_log_handle", None)
+        if handle is not None:
+            try:
+                handle.close()
+            except OSError:
+                pass
+            self._log_handle = None
+        path = getattr(self, "_log_path", None)
+        if path:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            self._log_path = None
 
     # ------------------------------------------------------------------
     # Helpers

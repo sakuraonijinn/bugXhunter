@@ -72,26 +72,46 @@ class SmartClient:
         pay for Frida's readiness wait.
         """
         if self._server_ready:
-            return True
+            # Still check the tunnel. A server that was reachable once
+            # can become unreachable when the tunnel under it dies, and
+            # reporting it as ready then would hide the real fault.
+            if self.tunnel is None or self.tunnel.is_alive():
+                return True
+            self._server_ready = False
+            self.last_error = "the tunnel is no longer running"
 
         # Open the reverse tunnel if configured.
         #
         # Two forwards are needed, not one. FridaClient binds 127.0.0.1 on
         # the operator, so without a forward for 27042 it can never see the
         # target's frida-server no matter how healthy the tunnel looks.
-        if self.ssh_host and not self.tunnel:
-            self.tunnel = ReverseSSH(
-                host=self.ssh_host, port=self.ssh_port,
-                user=self.ssh_user, key=self.ssh_key,
-            )
-            if not self.tunnel.test_connectivity():
-                self.last_error = "ssh to {} unreachable".format(self.ssh_host)
-                return False
-            # One SSH process carrying both forwards.
-            self.tunnel.connect_multi([
-                (self.SERVER_PORT, self.SERVER_PORT),
-                (self.FRIDA_PORT, self.FRIDA_PORT),
-            ])
+        if self.ssh_host:
+            if self.tunnel is not None and not self.tunnel.is_alive():
+                # The ssh process died. Rebuild the tunnel rather than
+                # waiting out the timeout against a tunnel that is gone.
+                self.tunnel.close()
+                self.tunnel = None
+                self.last_error = "the tunnel had died and was rebuilt"
+            if self.tunnel is None:
+                self.tunnel = ReverseSSH(
+                    host=self.ssh_host, port=self.ssh_port,
+                    user=self.ssh_user, key=self.ssh_key,
+                )
+                if not self.tunnel.test_connectivity():
+                    self.last_error = "ssh to {} unreachable".format(self.ssh_host)
+                    self.tunnel.close()
+                    self.tunnel = None
+                    return False
+                # One SSH process carrying both forwards.
+                ok, reason = self.tunnel.connect_multi([
+                    (self.SERVER_PORT, self.SERVER_PORT),
+                    (self.FRIDA_PORT, self.FRIDA_PORT),
+                ])
+                if not ok:
+                    self.last_error = "the tunnel did not come up: " + reason
+                    self.tunnel.close()
+                    self.tunnel = None
+                    return False
 
         # Wait for the server to respond.
         deadline = time.time() + max_wait
