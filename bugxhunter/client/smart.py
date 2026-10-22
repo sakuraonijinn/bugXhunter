@@ -145,10 +145,23 @@ class SmartClient:
                 return True
             time.sleep(1)
 
-        self.last_error = (
-            "frida-server not reachable on port {}".format(self.FRIDA_PORT)
-        )
+        self.last_error = self._frida_unreachable_reason()
         return False
+
+    def _frida_unreachable_reason(self):
+        """Say what to do about a frida-server that is not answering."""
+        host, port = self.frida._endpoint()
+        if self.frida.is_local:
+            return (
+                "frida-server is not running on this machine. Start it: "
+                "su -c '/data/local/tmp/frida-server --no-pause &'"
+            )
+        return (
+            "no frida-server is answering on {h}:{p}. It has to be running "
+            "on the target, which needs root, or the target has to be "
+            "carrying Frida Gadget. Check the route to {h} and that the "
+            "server is listening there.".format(h=host, p=port)
+        )
 
     def _start_frida_on_target(self):
         """Start frida-server on the target device over SSH.
@@ -198,7 +211,10 @@ class SmartClient:
             if not self.ensure_server():
                 return [{"level": "HIGH", "category": "posture.unreachable",
                          "detail": self.last_error or "Server not reachable"}]
-        posture = PostureCheck()
+        # The privilege tier has to be passed in, or the checks that need
+        # Shizuku or root quietly do nothing.
+        from ..privileges import Privileges
+        posture = PostureCheck(priv=Privileges())
         return posture.run()
 
     def frida_attach(self, process_name):
