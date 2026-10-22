@@ -148,6 +148,15 @@ def cmd_gadget(args, client):
         return
 
 
+def cmd_selfcheck(args, client):
+    """Import every module and resolve every annotation."""
+    from ..selfcheck import check
+    result = check()
+    _print(result)
+    if not result["ok"]:
+        raise SystemExit(1)
+
+
 def cmd_privileges(args, client):
     """Report the local elevation tier, the evidence, and what to do next."""
     from ..privileges import Privileges
@@ -384,6 +393,8 @@ def build_parser():
 
     priv = sub.add_parser("privileges",
                           help="report the local elevation tier")
+    sub.add_parser("selfcheck",
+                   help="import every module and resolve every annotation")
     vpn = sub.add_parser("vpn", help="report or change the traffic routing")
     vpn.add_argument("--mode", choices=("auto", "off", "proxy", "tun"),
                      help="routing mode to apply")
@@ -427,6 +438,7 @@ HANDLERS = {
     "termux": cmd_termux,
     "gadget": cmd_gadget,
     "privileges": cmd_privileges,
+    "selfcheck": cmd_selfcheck,
 }
 
 

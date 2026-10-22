@@ -29,6 +29,12 @@ jobs:
 
       - name: Import every module
         run: |
+          # Python 3.14 evaluates annotations lazily, so a name that an
+          # annotation refers to but never imports causes no error there
+          # and a hard NameError on 3.11. The self-check forces the
+          # annotations to be resolved, so that difference shows up here
+          # rather than only on the server.
+          python3 -m bugxhunter.selfcheck
           python3 - <<'PY'
           import importlib
           mods = [
@@ -36,8 +42,9 @@ jobs:
               'bugxhunter.posture', 'bugxhunter.termux', 'bugxhunter.vpn',
               'bugxhunter.http', 'bugxhunter.tools', 'bugxhunter.privileges',
               'bugxhunter.server', 'bugxhunter.hooks',
-              'bugxhunter.client.smart', 'bugxhunter.client.reverse_ssh',
-              'bugxhunter.client.cli', 'bugxhunter.client.drop',
+              'bugxhunter.hooks.lint', 'bugxhunter.client.smart',
+              'bugxhunter.client.reverse_ssh', 'bugxhunter.client.cli',
+              'bugxhunter.client.drop', 'bugxhunter.client.gadget',
               'bugxhunter.scanners.network', 'bugxhunter.scanners.web',
               'bugxhunter.scanners.vuln', 'bugxhunter.scanners.credential',
               'bugxhunter.scanners.config_audit',
@@ -254,10 +261,18 @@ jobs:
                   raise SystemExit("the gadget was not packaged")
               if not config:
                   raise SystemExit("the gadget config was not packaged")
-              manifest = z.read("AndroidManifest.xml")
-              if b"frida_gadget_config" not in manifest:
-                  raise SystemExit("the manifest does not point at the config")
-              print("  the manifest points at the config")
+
+          # The manifest in an APK is binary XML, so the meta-data has to
+          # be read out with aapt2 rather than searched for as bytes.
+          BT = os.environ.get("ANDROID_HOME", "") + "/build-tools/34.0.0"
+          dump = subprocess.run(
+              [BT + "/aapt2", "dump", "xmltree", result["apk"],
+               "--file", "AndroidManifest.xml"],
+              capture_output=True, text=True)
+          if "frida_gadget_config" not in dump.stdout:
+              raise SystemExit(
+                  "the manifest does not point at the config:\n" + dump.stdout[:800])
+          print("  the manifest points at the config")
 
           verify = subprocess.run(
               ["apksigner", "verify", "--verbose", result["apk"]],

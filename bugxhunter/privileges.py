@@ -20,7 +20,7 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 ROOT = "root"
 SHIZUKU = "shizuku"
