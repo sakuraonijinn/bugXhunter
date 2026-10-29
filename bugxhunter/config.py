@@ -34,6 +34,11 @@ class Config:
     auth_token: str = ""          # from env AUTH_TOKEN if not set here
     log_level: str = "info"
 
+    # ---- drop chain ----
+    # Pre-shared key shared between transmitter (B) and receiver (C).
+    # Required for /drop/receive HMAC validation and used by the bootstrapper.
+    drop_psk: str = ""
+
     # ---- termux ----
     termux_enabled: bool = True
     termux_api_path: str = ""     # auto-detected if empty
@@ -86,6 +91,9 @@ class Config:
     # ---- logging ----
     log_file: str = ""            # empty = stderr
 
+    # ---- drop chain ----
+    drop_store_dir: str = "/data/local/tmp/drops"
+
 
 def _load_json(path: str) -> Dict[str, Any]:
     if not os.path.isfile(path):
@@ -122,6 +130,8 @@ def load(path: str = None) -> Config:
         "gadget_target",
         "scanner_user_agent",
         "log_file",
+        "drop_psk",
+        "drop_store_dir",
     ):
         if k in raw:
             setattr(cfg, k, raw[k])

