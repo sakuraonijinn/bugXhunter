@@ -1,0 +1,17 @@
+{
+  "$schema": "https://schemas.railway.com/railway-v2.5.0.json",
+  "build": {
+    "builder": "dockerfile",
+    "dockerfilePath": "Dockerfile"
+  },
+  "deploy": {
+    "startCommand": "python3 -m uvicorn bugxhunter_server:app --host 0.0.0.0 --port $PORT",
+    "port": 7080,
+    "environmentVariables": [
+      {
+        "key": "AUTH_TOKEN",
+        "value": "testtoken12345"
+      }
+    ]
+  }
+}

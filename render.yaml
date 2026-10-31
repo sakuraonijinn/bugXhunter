@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: bugxhunter
+    env: docker
+    dockerfilePath: ./Dockerfile
+    region: oregon
+    plan: free
+    port: 7080
+    envVars:
+      - key: AUTH_TOKEN
+        value: testtoken12345
+    autoDeploy: true
+    healthCheckPath: /health
