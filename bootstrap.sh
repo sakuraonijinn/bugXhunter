@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-TOKEN="${BUGXHUNTER_TOKEN:-change-me}"
+TOKEN="${BUGXHUNTER_TOKEN:-$(python3 -c 'import secrets; print(secrets.token_hex(16))')}"
 HOST="0.0.0.0"
 PORT=7080
 DROP_TARGET=""
