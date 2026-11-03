@@ -1,15 +1,17 @@
 {
-  "auth_token": "testtoken12345",
-  "frida": {
-    "host": "127.0.0.1",
-    "port": 27042,
-    "remotes": []
-  },
+  "token": "change-me-12345",
+  "version": "1.0.0",
+  "host": "0.0.0.0",
+  "port": 7080,
+  "vpn_enabled": false,
+  "frida_host": "127.0.0.1",
+  "frida_port": 27042,
+  "frida_server_path": "/data/local/tmp/frida-server",
   "xhunter": {
     "vps_host": "100.121.217.115",
     "vps_user": "root",
     "vps_port": 2222,
-    "vps_key": "/storage/emulated/0/bugxhunter/state/keys/id_ed25519",
+    "vps_key": "[redacted]",
     "listen_port": 9090,
     "gateway_ports": true
   }

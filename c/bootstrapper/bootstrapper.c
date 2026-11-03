@@ -17,8 +17,6 @@
 #define FRIDA_SERVER_PATH "/data/local/tmp/frida-server"
 #define FRIDA_SERVER_PORT 27042
 #define TUNNEL_LISTEN_PORT 7080
-#define OPERATOR_HOST "127.0.0.1"
-#define OPERATOR_PORT 9090
 #define MAX_BUFFER 4096
 
 // Adaptive policy loop - magnetometer monitoring
@@ -47,7 +45,7 @@ void adaptive_policy_loop() {
 }
 
 // Establish reverse tunnel to operator
-int establish_reverse_tunnel() {
+int establish_reverse_tunnel(const char* operator_host, int operator_port) {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("socket");
@@ -57,8 +55,8 @@ int establish_reverse_tunnel() {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(OPERATOR_PORT);
-    inet_pton(AF_INET, OPERATOR_HOST, &addr.sin_addr);
+    addr.sin_port = htons(operator_port);
+    inet_pton(AF_INET, operator_host, &addr.sin_addr);
     
     if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         perror("connect");
@@ -82,10 +80,6 @@ int establish_reverse_tunnel() {
     }
     
     printf("Reverse tunnel established to operator\n");
-    
-    // Proxy loop: forward between socket and local listener (port 7080)
-    // This would typically be done in a separate thread
-    // For now, we just return the socket
     return sock;
 }
 
@@ -117,6 +111,67 @@ pid_t launch_frida_server() {
     return pid;
 }
 
+// Proxy loop: forward data between tunnel socket and local service
+static void proxy_loop(int tunnel_sock, int local_port) {
+    int local_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (local_sock < 0) {
+        perror("socket");
+        return;
+    }
+    
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(local_port);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr.sin_addr);
+    
+    if (connect(local_sock, (struct sockaddr*)&local_addr, sizeof(local_addr)) < 0) {
+        perror("connect to local service");
+        close(local_sock);
+        return;
+    }
+    
+    printf("Proxy loop started: tunnel <-> localhost:%d\n", local_port);
+    
+    fd_set read_fds;
+    char buffer[MAX_BUFFER];
+    
+    while (1) {
+        FD_ZERO(&read_fds);
+        FD_SET(tunnel_sock, &read_fds);
+        FD_SET(local_sock, &read_fds);
+        
+        int max_fd = tunnel_sock > local_sock ? tunnel_sock : local_sock;
+        int activity = select(max_fd + 1, &read_fds, NULL, NULL, NULL);
+        
+        if (activity < 0) {
+            perror("select");
+            break;
+        }
+        
+        // Data from tunnel → local
+        if (FD_ISSET(tunnel_sock, &read_fds)) {
+            int bytes = recv(tunnel_sock, buffer, MAX_BUFFER, 0);
+            if (bytes <= 0) {
+                printf("Tunnel closed\n");
+                break;
+            }
+            send(local_sock, buffer, bytes, 0);
+        }
+        
+        // Data from local → tunnel
+        if (FD_ISSET(local_sock, &read_fds)) {
+            int bytes = recv(local_sock, buffer, MAX_BUFFER, 0);
+            if (bytes <= 0) {
+                printf("Local service closed\n");
+                break;
+            }
+            send(tunnel_sock, buffer, bytes, 0);
+        }
+    }
+    
+    close(local_sock);
+}
 // Handle commands from operator
 void handle_operator_commands(int tunnel_sock) {
     unsigned char buffer[MAX_BUFFER];
@@ -130,7 +185,11 @@ void handle_operator_commands(int tunnel_sock) {
         // Parse JSON command
         // {"action": "START_FRIDA|STOP_FRIDA|ROTATE_PSK|KILL|WIPE", "target": "pkg.name"}
         char* cmd_str = (char*)buffer;
-        cmd_str[bytes] = '\0';
+        if (bytes < MAX_BUFFER) {
+            cmd_str[bytes] = '\0';
+        } else {
+            cmd_str[MAX_BUFFER - 1] = '\0';
+        }
         
         if (strstr(cmd_str, "\"action\":\"START_FRIDA\"") || strstr(cmd_str, "\"action\": \"START_FRIDA\"")) {
             printf("Command: START_FRIDA\n");
@@ -158,8 +217,24 @@ void handle_operator_commands(int tunnel_sock) {
 }
 
 int main(int argc, char* argv[]) {
+    const char* operator_host = "127.0.0.1";
+    int operator_port = 9090;
+    
+    // Parse command-line arguments
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--operator-host") == 0 && i + 1 < argc) {
+            operator_host = argv[++i];
+        } else if (strcmp(argv[i], "--operator-port") == 0 && i + 1 < argc) {
+            operator_port = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--frida-path") == 0 && i + 1 < argc) {
+            // Allow overriding frida server path via env
+            setenv("FRIDA_SERVER_PATH", argv[++i], 1);
+        }
+    }
+    
     printf("BugXhunter Bootstrapper starting...\n");
     printf("Architecture: %s\n", sizeof(void*) == 8 ? "arm64" : "arm");
+    printf("Operator: %s:%d\n", operator_host, operator_port);
     
     // 1. Launch frida-server
     pid_t frida_pid = launch_frida_server();
@@ -168,19 +243,8 @@ int main(int argc, char* argv[]) {
         return 1;
     }
     
-    // 2. Try SSH reverse tunnel first
-    int tunnel_sock = -1;
-    
-    // Check if /system/bin/ssh exists
-    if (access("/system/bin/ssh", X_OK) == 0) {
-        printf("SSH available - attempting SSH reverse tunnel\n");
-        // Would execve /system/bin/ssh with -R 7081:localhost:7080 operator@operator-host
-        // For now, fall back to raw TCP
-    } else {
-        printf("SSH not available - using raw TCP tunnel\n");
-        tunnel_sock = establish_reverse_tunnel();
-    }
-    
+    // 2. Establish reverse tunnel
+    int tunnel_sock = establish_reverse_tunnel(operator_host, operator_port);
     if (tunnel_sock < 0) {
         fprintf(stderr, "Failed to establish reverse tunnel\n");
         return 1;

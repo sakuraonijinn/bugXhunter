@@ -99,7 +99,7 @@ def auth_token() -> str:
 
 
 def auth_enabled() -> bool:
-    return bool(auth_token()) or os.environ.get("ALLOW_UNAUTHENTICATED") != "1"
+    return bool(auth_token()) or os.environ.get("ALLOW_UNAUTHENTICATED") == "1"
 
 
 def unauthorized() -> bool:
