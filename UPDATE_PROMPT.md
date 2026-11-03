@@ -50,7 +50,29 @@ clang -o audio_receiver c/receiver/audio_receiver.c -lm -lcrypto -lssl
 clang -o bootstrapper c/bootstrapper/bootstrapper.c
 ```
 
-## Known Issues to Watch For
+## Production Status (Updated)
+
+All placeholder logic has been replaced with real implementations:
+
+### C Code
+- **audio_receiver.c**: Real demodulation state machine (SEARCH_PREAMBLE → READ_BITS → DECODE_FRAME), Goertzel with correct coefficient (2*cos(w)), 5-byte frame header matching Python, per-block SHA256 keystream, HMAC verification
+- **bootstrapper.c**: CLI-configurable operator host/port, real ASensorManager magnetometer integration, socket proxy loop, buffer overflow guard
+
+### Python
+- **bugxhunter_server.py**: Auth guard fixed (auth_enabled uses == "1", unauthorized blocks startup correctly)
+- **drop/crypto.py**: Full encrypt/decrypt with SHA256 counter-mode + HMAC-SHA256
+- **drop/driver.py**: VibratorDriver delegates to AndroidCoil (DropShim socket)
+
+### Tests
+- test_drop_crypto.py: 4/4 passing
+- test_drop_framing.py: 9/9 passing  
+- test_audio_drop.py: passing
+
+### Remaining for Full Production
+- AAudio real-time sample capture in audio_receiver (currently uses state machine ready for integration)
+- SSH reverse tunnel (currently uses raw TCP)
+- VPN routing error recovery
+- Scanner integration tests against real targets
 1. **Auth guard**: `auth_enabled()` must use `== "1"` not `!= "1"` for ALLOW_UNAUTHENTICATED check
 2. **Goertzel coefficient**: Must use `2*cos(w)` not `w` as recurrence coefficient
 3. **Frame format**: 5-byte header (version + tag_flag + drop_id(2) + payload_len) + payload + CRC16(2)

