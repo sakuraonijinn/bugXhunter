@@ -31,6 +31,7 @@ class AndroidCoil:
         self._send({"cmd": "idle"})
 
     def close(self) -> None:
+        # Each _send opens a fresh socket; nothing persistent to close.
         pass
 
 
@@ -49,6 +50,7 @@ class AndroidMagnetometer:
         return float(self._send({"cmd": "sample"})["value"])
 
     def close(self) -> None:
+        # Each _send opens a fresh socket; nothing persistent to close.
         pass
 
 
@@ -56,5 +58,3 @@ class AndroidMagnetometer:
 _: CoilDriver = AndroidCoil()  # type: ignore
 __: Magnetometer = AndroidMagnetometer()  # type: ignore
 del _, __
-EOF
-echo done

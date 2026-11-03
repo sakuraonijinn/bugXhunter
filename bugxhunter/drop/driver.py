@@ -34,13 +34,20 @@ class Magnetometer(Protocol):
 
 
 class VibratorDriver:
-    """CoilDriver backed by an Android vibrator motor (stub).
+    """CoilDriver backed by an Android vibrator motor via DropShim.
 
-    On a real device this would call the vibrator service; here we keep a
-    log of emitted pulses so tests can inspect them.
+    Delegates pulse/idle to an AndroidCoil instance, which talks to
+    DropShim.kt over a localhost socket. Falls back to in-memory logging
+    when no shim is reachable (useful for tests / dry runs).
     """
 
-    def __init__(self):
+    def __init__(self, host: str = "127.0.0.1", port: int = 8765):
+        self._coil = None
+        try:
+            from .android_driver import AndroidCoil
+            self._coil = AndroidCoil(host, port)
+        except Exception:
+            pass
         self.pulses: list[float] = []
         self.idle_calls = 0
 
@@ -48,12 +55,19 @@ class VibratorDriver:
         if duration_ms < 0:
             raise ValueError("duration_ms must be >= 0")
         self.pulses.append(duration_ms)
+        if self._coil is not None:
+            self._coil.pulse(duration_ms)
 
     def idle(self) -> None:
         self.idle_calls += 1
+        if self._coil is not None:
+            self._coil.idle()
 
     def close(self) -> None:
         self.idle_calls += 1
+        if self._coil is not None:
+            self._coil.close()
+            self._coil = None
 
 
 class NullMagnetometer:

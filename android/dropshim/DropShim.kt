@@ -118,5 +118,4 @@ class DropShim(private val context: Context) {
         }
     }
 }
-EOF
-echo done
+
