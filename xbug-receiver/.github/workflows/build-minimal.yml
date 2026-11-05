@@ -11,13 +11,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Clone the bugXhunter repo (contains the C audio receiver)
+      - name: Clone bugXhunter Repo
+        run: |
+          git clone https://github.com/sakuraonijinn/bugXhunter.git bugxhunter-src
+          echo "C source available at: $(pwd)/bugxhunter-src/c/receiver/audio_receiver.c"
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # Use pre-installed Android SDK (already on ubuntu-latest)
+      # Use pre-installed Android SDK
       - name: Setup Android SDK Path
         run: |
           BUILD_TOOLS_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | sort -V | tail -n 1)
@@ -26,11 +32,15 @@ jobs:
           echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
 
-      # Install NDK via sdkmanager (pre-installed SDK has it)
+      # Install NDK
       - name: Install NDK
         run: |
           sdkmanager "ndk;25.1.8937393" 2>/dev/null || true
-          ls $ANDROID_HOME/ndk/ 2>/dev/null || echo "NDK installed at default location"
+          if [ -d "$ANDROID_HOME/ndk/25.1.8937393" ]; then
+            echo "NDK installed"
+          else
+            echo "NDK not found, using system default"
+          fi
 
       - name: Generate Keystore
         run: |
@@ -44,23 +54,22 @@ jobs:
         run: |
           NDK=$ANDROID_HOME/ndk/25.1.8937393
           if [ ! -d "$NDK" ]; then
-            NDK=$(find $ANDROID_HOME/ndk -maxdepth 1 -type d | sort -V | tail -n 1)
+            NDK=$(find $ANDROID_HOME/ndk -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
           fi
           echo "Using NDK: $NDK"
-          cd xbug-receiver/app
-          mkdir -p jniLibs/arm64-v8a
+          mkdir -p xbug-receiver/app/jniLibs/arm64-v8a
           $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-            -shared -O2 -o jniLibs/arm64-v8a/libaudio_receiver.so \
-            ../../c/receiver/audio_receiver.c \
+            -shared -O2 -o xbug-receiver/app/jniLibs/arm64-v8a/libaudio_receiver.so \
+            bugxhunter-src/c/receiver/audio_receiver.c \
             -lm -lcrypto -lssl -llog
-          echo "Native library built: $(ls -lh jniLibs/arm64-v8a/libaudio_receiver.so)"
-          cp jniLibs/arm64-v8a/libaudio_receiver.so src/main/jniLibs/arm64-v8a/ 2>/dev/null || true
+          echo "Native library built: $(ls -lh xbug-receiver/app/jniLibs/arm64-v8a/libaudio_receiver.so)"
+          mkdir -p xbug-receiver/app/src/main/jniLibs/arm64-v8a/
+          cp xbug-receiver/app/jniLibs/arm64-v8a/libaudio_receiver.so xbug-receiver/app/src/main/jniLibs/arm64-v8a/
 
       # Build APK
       - name: Build APK
         run: |
           cd xbug-receiver/app
-          # Check if gradlew exists
           if [ ! -f "gradlew" ]; then
             echo "No gradlew found, creating one..."
             gradle wrapper 2>/dev/null || true
