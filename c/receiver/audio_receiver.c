@@ -11,7 +11,6 @@
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
-#include <pty.h>
 
 #define SAMPLE_RATE 44100.0
 #define WINDOW_SAMPLES 441 // 10ms at 44.1kHz
