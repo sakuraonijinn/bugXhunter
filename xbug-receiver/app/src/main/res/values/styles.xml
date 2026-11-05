@@ -1,0 +1,4 @@
+<resources>
+    <style name="Theme.XBug" parent="@android:style/Theme.DeviceDefault.Light"/>
+    <style name="Theme.XBug.NoActionBar" parent="@android:style/Theme.DeviceDefault.Light.NoActionBar"/>
+</resources>
