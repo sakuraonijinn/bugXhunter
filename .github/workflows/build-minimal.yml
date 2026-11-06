@@ -70,12 +70,40 @@ jobs:
       - name: Build APK
         run: |
           cd xbug-receiver/app
+          echo "=== Checking for gradlew ==="
           if [ ! -f "gradlew" ]; then
-            echo "No gradlew found, creating one..."
-            gradle wrapper 2>/dev/null || true
+            echo "No gradlew found, installing gradle..."
+            mkdir -p /tmp/gradle
+            cd /tmp/gradle
+            if [ ! -f "gradle-8.7-bin.zip" ]; then
+              wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip || curl -sL -o gradle-8.7-bin.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            fi
+            unzip -q gradle-8.7-bin.zip
+            export PATH=/tmp/gradle/gradle-8.7/bin:$PATH
+            gradle wrapper 2>&1
           fi
           chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleDebug --stacktrace 2>&1 | tail -30 || gradle assembleDebug --stacktrace 2>&1 | tail -30
+          
+          echo "=== Running Gradle build ==="
+          if [ -f "gradlew" ]; then
+            ./gradlew assembleDebug --no-daemon 2>&1 | tee /tmp/gradle_build.log || echo "Gradle build failed, checking for APK anyway"
+            echo "=== Build log tail ==="
+            tail -50 /tmp/gradle_build.log
+          else
+            echo "No gradlew available, attempting manual build"
+            java -version 2>&1
+            ls -la app/build/ 2>/dev/null || echo "No app/build dir"
+          fi
+
+      # Inspect build outputs
+      - name: Inspect Build Outputs
+        run: |
+          echo "=== All APK files found ==="
+          find . -name "*.apk" 2>/dev/null || echo "No APKs found"
+          echo "=== app/build contents ==="
+          find xbug-receiver/app/build -type f 2>/dev/null || echo "No build directory"
+          echo "=== app/outputs contents ==="
+          find xbug-receiver/app/build/outputs -type f 2>/dev/null || echo "No outputs directory"
 
       # Sign APK
       - name: Sign APK
