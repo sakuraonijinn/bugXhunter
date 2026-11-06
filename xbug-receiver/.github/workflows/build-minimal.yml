@@ -30,14 +30,18 @@ jobs:
           echo "/usr/local/lib/android/sdk/build-tools/$BUILD_TOOLS_VERSION" >> $GITHUB_PATH
           echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
+          yes | sdkmanager --licenses 2>/dev/null || true
 
       - name: Install NDK
         run: |
-          sdkmanager "ndk;25.1.8937393" "platforms;android-34" 2>/dev/null || true
+          if [ ! -d "$ANDROID_HOME/ndk/25.1.8937393" ]; then
+            sdkmanager "ndk;25.1.8937393" "platforms;android-34" 2>/dev/null || true
+          fi
           if [ -d "$ANDROID_HOME/ndk/25.1.8937393" ]; then
             echo "NDK installed"
           else
-            echo "NDK not found, using system default"
+            NDK=$(find $ANDROID_HOME/ndk -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
+            echo "Using system NDK: $NDK"
           fi
 
       - name: Generate Keystore
