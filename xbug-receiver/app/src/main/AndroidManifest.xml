@@ -12,8 +12,8 @@
         android:allowBackup="true"
         android:label="XBug Receiver"
         android:theme="@style/Theme.XBug.NoActionBar"
-        android:icon="@mipmap/ic_launcher"
-        android:roundIcon="@mipmap/ic_launcher_round">
+        android:icon="@android:drawable/ic_media_play"
+        android:roundIcon="@android:drawable/ic_media_play">
 
         <activity
             android:name=".MainActivity"
