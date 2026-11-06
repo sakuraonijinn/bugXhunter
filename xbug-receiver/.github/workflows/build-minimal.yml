@@ -11,11 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Clone the bugXhunter repo (contains the C audio receiver)
       - name: Clone bugXhunter Repo
         run: |
           git clone https://github.com/sakuraonijinn/bugXhunter.git bugxhunter-src
           echo "C source available at: $(pwd)/bugxhunter-src/c/receiver/audio_receiver.c"
+          ls -la xbug-receiver/ 2>/dev/null || echo "xbug-receiver NOT found at root"
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -23,7 +23,6 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # Use pre-installed Android SDK
       - name: Setup Android SDK Path
         run: |
           BUILD_TOOLS_VERSION=$(ls /usr/local/lib/android/sdk/build-tools/ | sort -V | tail -n 1)
@@ -32,10 +31,9 @@ jobs:
           echo "/usr/local/lib/android/sdk/platform-tools" >> $GITHUB_PATH
           echo "ANDROID_HOME=/usr/local/lib/android/sdk" >> $GITHUB_ENV
 
-      # Install NDK
       - name: Install NDK
         run: |
-          sdkmanager "ndk;25.1.8937393" 2>/dev/null || true
+          sdkmanager "ndk;25.1.8937393" "platforms;android-34" 2>/dev/null || true
           if [ -d "$ANDROID_HOME/ndk/25.1.8937393" ]; then
             echo "NDK installed"
           else
@@ -49,39 +47,68 @@ jobs:
           -storepass android -keypass android \
           -dname "CN=Android Debug, O=Android, C=US"
 
-      # Build Native Library (libaudio_receiver.so)
-      - name: Build Native Library
+      - name: Build Native Binary (audio_receiver)
         run: |
           NDK=$ANDROID_HOME/ndk/25.1.8937393
           if [ ! -d "$NDK" ]; then
             NDK=$(find $ANDROID_HOME/ndk -maxdepth 1 -type d 2>/dev/null | sort -V | tail -n 1)
           fi
           echo "Using NDK: $NDK"
-          mkdir -p xbug-receiver/app/jniLibs/arm64-v8a
+          mkdir -p xbug-receiver/app/src/main/assets
           $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android21-clang \
-            -shared -O2 -o xbug-receiver/app/jniLibs/arm64-v8a/libaudio_receiver.so \
+            -O2 -o xbug-receiver/app/src/main/assets/audio_receiver \
             bugxhunter-src/c/receiver/audio_receiver.c \
             -lm -llog
-          echo "Native library built: $(ls -lh xbug-receiver/app/jniLibs/arm64-v8a/libaudio_receiver.so)"
-          mkdir -p xbug-receiver/app/src/main/jniLibs/arm64-v8a/
-          cp xbug-receiver/app/jniLibs/arm64-v8a/libaudio_receiver.so xbug-receiver/app/src/main/jniLibs/arm64-v8a/
+          echo "Native binary built: $(ls -lh xbug-receiver/app/src/main/assets/audio_receiver)"
+          chmod +x xbug-receiver/app/src/main/assets/audio_receiver
 
-      # Build APK
       - name: Build APK
+        working-directory: xbug-receiver/app
         run: |
-          cd xbug-receiver/app
           if [ ! -f "gradlew" ]; then
-            echo "No gradlew found, creating one..."
-            gradle wrapper 2>/dev/null || true
+            echo "No gradlew found, installing gradle..."
+            mkdir -p /tmp/gradle
+            cd /tmp/gradle
+            if [ ! -f "gradle-8.7-bin.zip" ]; then
+              wget -q https://services.gradle.org/distributions/gradle-8.7-bin.zip || curl -sL -o gradle-8.7-bin.zip https://services.gradle.org/distributions/gradle-8.7-bin.zip
+            fi
+            unzip -q gradle-8.7-bin.zip
+            export PATH=/tmp/gradle/gradle-8.7/bin:$PATH
+            cd $GITHUB_WORKSPACE/xbug-receiver/app
+            gradle wrapper 2>&1
           fi
           chmod +x gradlew 2>/dev/null || true
-          ./gradlew assembleDebug --stacktrace 2>&1 | tail -30 || gradle assembleDebug --stacktrace 2>&1 | tail -30
+          
+          echo "=== Running Gradle build ==="
+          if [ -f "gradlew" ]; then
+            ./gradlew assembleDebug --no-daemon 2>&1 | tail -30
+          else
+            echo "No gradlew available"
+            java -version 2>&1
+            ls -la build/ 2>/dev/null || echo "No build dir"
+          fi
 
-      # Sign APK
+      - name: Find APK
+        run: |
+          echo "=== All APK files found ==="
+          find . -name "*.apk" 2>/dev/null || echo "No APKs found"
+          echo "=== app/build contents ==="
+          ls -la xbug-receiver/app/build/ 2>/dev/null || echo "No build directory"
+          echo "=== app/outputs contents ==="
+          find xbug-receiver/app/build/outputs -type f 2>/dev/null || echo "No outputs directory"
+
       - name: Sign APK
         run: |
-          UNSIGNED=$(find . -name "*.apk" ! -name "*-signed.apk" | head -1)
+          UNSIGNED=$(find xbug-receiver/app/build/outputs/apk/debug -name "*-debug.apk" ! -name "*-signed.apk" -o -name "*-unsigned.apk" 2>/dev/null | head -1)
+          if [ -z "$UNSIGNED" ]; then
+            UNSIGNED=$(find . -name "*.apk" ! -name "*-signed.apk" 2>/dev/null | head -1)
+          fi
           echo "Unsigned APK: $UNSIGNED"
+          if [ -z "$UNSIGNED" ]; then
+            echo "No unsigned APK found!"
+            find . -name "*.apk" 2>/dev/null || true
+            exit 1
+          fi
           apksigner sign \
             --ks my-release-key.keystore \
             --ks-pass pass:android \
@@ -89,7 +116,6 @@ jobs:
             --out signed.apk \
             "$UNSIGNED"
 
-      # Upload the signed APK
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
