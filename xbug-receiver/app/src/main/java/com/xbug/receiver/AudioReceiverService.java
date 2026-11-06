@@ -5,12 +5,16 @@ import android.app.NotificationChannel;
 import android.app.Service;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
-import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.IBinder;
 import android.util.Log;
 
-public class AudioReceiverService extends Service {
+import androidx.annotation.Nullable;
+import androidx.core.app.NotificationCompat;
+import androidx.core.app.NotificationManagerCompat;
+import androidx.lifecycle.LifecycleService;
+
+public class AudioReceiverService extends LifecycleService {
     private static final String TAG = "AudioReceiver";
     private boolean running = false;
 
@@ -19,13 +23,14 @@ public class AudioReceiverService extends Service {
             System.loadLibrary("audio_receiver");
             Log.i(TAG, "Native library loaded successfully");
         } catch (UnsatisfiedLinkError e) {
-            Log.e(TAG, "Failed to load native library: " + e);
+            Log.e(TAG, "Failed to load native library: " + e.getMessage());
         }
     }
 
     @Override
     public void onCreate() {
         super.onCreate();
+        ensureNotificationChannel();
         Log.i(TAG, "Service created");
     }
 
@@ -34,46 +39,48 @@ public class AudioReceiverService extends Service {
         running = true;
         startForeground(1, buildNotification());
         initNativeAudioReceiver();
-        return ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PROJECTION;
+        Log.i(TAG, "Service started");
+        return ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
     }
 
     @Override
     public void onDestroy() {
         running = false;
         super.onDestroy();
+        Log.i(TAG, "Service destroyed");
     }
 
     @Nullable
     @Override
     public IBinder onBind(Intent intent) {
-        return new LocalBinder();
+        return null;
     }
 
     public boolean isRunning() {
         return running;
     }
 
-    public class LocalBinder extends android.os.Binder {
-        public AudioReceiverService getService() {
-            return AudioReceiverService.this;
-        }
-    }
-
     private Notification buildNotification() {
+        ensureNotificationChannel();
         return NotificationCompat.Builder(this, "xbug_channel")
-            .setContentTitle("XBug Receiver")
-            .setContentText("Listening for audio drop...")
+            .setContentTitle(getString(R.string.app_name))
+            .setContentText(getString(R.string.status_listening))
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setOngoing(true)
             .build();
     }
 
-    // Load Channel for Android O+ if needed
-    private void ensureChannel() {
+    private void ensureNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            NotificationChannel channel = new NotificationChannel(
-                "xbug_channel", "XBug Receiver", NotificationManager.IMPORTANCE_LOW);
-            getSystemService(NotificationManager.class).createNotificationChannel(channel);
+            android.app.NotificationManager nm =
+                (android.app.NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) {
+                NotificationChannel channel = new NotificationChannel(
+                    "xbug_channel",
+                    getString(R.string.channel_name),
+                    android.app.NotificationManager.IMPORTANCE_LOW);
+                nm.createNotificationChannel(channel);
+            }
         }
     }
 

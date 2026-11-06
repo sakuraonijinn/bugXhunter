@@ -4,4 +4,7 @@
     <string name="stop">Stop</string>
     <string name="status_stopped">Status: STOPPED</string>
     <string name="status_running">Status: RUNNING</string>
+    <string name="status_listening">Listening for audio drop...</string>
+    <string name="permission_denied">Permission denied - Receiver stopped</string>
+    <string name="channel_name">XBug Receiver</string>
 </resources>
